@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/001-wifi-config-webapp/plan.md
+at specs/004-ws2812-pov-hello/plan.md
 <!-- SPECKIT END -->

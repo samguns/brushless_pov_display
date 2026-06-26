@@ -16,7 +16,7 @@
 #define HTTP_PORT           80
 #define HTTP_BODY_BUF_SIZE  7168    /* 7 KB — config page with 20 networks */
 #define HTTP_HDR_BUF_SIZE   256
-#define HTTP_REQ_BUF_SIZE   512     /* max request we read in one shot */
+#define HTTP_REQ_BUF_SIZE   1024    /* accumulation buffer — covers headers+body */
 
 /* ---- module state --------------------------------------------------- */
 
@@ -38,7 +38,11 @@ static wifi_credentials_t s_pending_creds;
 static char s_page_buf[HTTP_BODY_BUF_SIZE];
 static char s_hdr_buf[HTTP_HDR_BUF_SIZE];
 
-/* Raw POST body (URL-encoded) — filled by recv callback */
+/* Raw accumulated HTTP request — grows across multiple tcp_recv calls */
+static char   s_req_buf[HTTP_REQ_BUF_SIZE];
+static size_t s_req_len = 0;
+
+/* Parsed POST body (URL-encoded) — extracted from s_req_buf */
 static char s_post_body[HTTP_REQ_BUF_SIZE];
 
 /* ---- URL-decode helper ---------------------------------------------- */
@@ -141,25 +145,26 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     if (!p || err != ERR_OK) {
         if (p) pbuf_free(p);
         tcp_close(pcb);
-        if (s_client_pcb == pcb) s_client_pcb = NULL;
+        if (s_client_pcb == pcb) { s_client_pcb = NULL; s_req_len = 0; }
         return ERR_OK;
     }
 
-    char req[HTTP_REQ_BUF_SIZE];
-    u16_t copy_len = pbuf_copy_partial(p, req,
-                                       sizeof(req) - 1, 0);
-    req[copy_len] = '\0';
+    /* Accumulate into s_req_buf across multiple tcp_recv frames */
+    u16_t space = (u16_t)(sizeof(s_req_buf) - 1 - s_req_len);
+    u16_t copy_len = p->tot_len < space ? p->tot_len : space;
+    pbuf_copy_partial(p, s_req_buf + s_req_len, copy_len, 0);
+    s_req_len += copy_len;
+    s_req_buf[s_req_len] = '\0';
     pbuf_free(p);
-
     tcp_recved(pcb, copy_len);
 
-    if (strncmp(req, "GET ", 4) == 0) {
+    if (strncmp(s_req_buf, "GET ", 4) == 0) {
         /* Captive-portal detection endpoints → redirect to / */
-        if (strstr(req, "generate_204") || strstr(req, "hotspot-detect") ||
-            strstr(req, "connectivitycheck") || strstr(req, "ncsi.txt")) {
+        if (strstr(s_req_buf, "generate_204") || strstr(s_req_buf, "hotspot-detect") ||
+            strstr(s_req_buf, "connectivitycheck") || strstr(s_req_buf, "ncsi.txt")) {
             send_redirect(pcb);
-        } else if (strncmp(req + 4, "/scan ", 6) == 0 ||
-                   strncmp(req + 4, "/scan\r", 6) == 0) {
+        } else if (strncmp(s_req_buf + 4, "/scan ", 6) == 0 ||
+                   strncmp(s_req_buf + 4, "/scan\r", 6) == 0) {
             /* GET /scan — return current scan results as JSON (T022) */
             s_client_pcb   = pcb;
             /* Run a fresh scan */
@@ -193,24 +198,39 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
             tcp_output(pcb);
             tcp_close(pcb);
             s_client_pcb = NULL;
+            s_req_len = 0;
         } else {
             s_client_pcb  = pcb;
             s_get_pending = true;
+            s_req_len = 0;
         }
-    } else if (strncmp(req, "POST /connect", 13) == 0) {
-        /* Extract body after the blank line */
-        const char *body = strstr(req, "\r\n\r\n");
-        if (body) {
-            body += 4;
-            strncpy(s_post_body, body, sizeof(s_post_body) - 1);
-            s_post_body[sizeof(s_post_body) - 1] = '\0';
-        } else {
-            s_post_body[0] = '\0';
-        }
+    } else if (strncmp(s_req_buf, "POST /connect", 13) == 0) {
+        /* Accumulate until we have the complete body.
+         * Parse Content-Length header to know when done. */
+        const char *hdr_end = strstr(s_req_buf, "\r\n\r\n");
+        if (!hdr_end) return ERR_OK;  /* headers not fully received yet */
+
+        const char *body = hdr_end + 4;
+        int received_body = (int)(s_req_len - (size_t)(body - s_req_buf));
+
+        /* Read Content-Length (may be absent for short bodies) */
+        int content_len = 0;
+        const char *cl = strstr(s_req_buf, "Content-Length: ");
+        if (!cl) cl = strstr(s_req_buf, "content-length: ");
+        if (cl) content_len = atoi(cl + 16);
+
+        if (received_body < content_len) return ERR_OK; /* body incomplete */
+
+        strncpy(s_post_body, body, sizeof(s_post_body) - 1);
+        s_post_body[sizeof(s_post_body) - 1] = '\0';
+        printf("[wifi_http] POST body (%d bytes): [%s]\n",
+               received_body, s_post_body);
         s_client_pcb   = pcb;
         s_post_pending = true;
+        s_req_len = 0;
     } else {
         send_redirect(pcb);
+        s_req_len = 0;
     }
 
     return ERR_OK;
@@ -225,6 +245,10 @@ static err_t on_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
         tcp_abort(client_pcb);
         return ERR_ABRT;
     }
+
+    /* Reset request accumulator for the new connection */
+    s_req_len = 0;
+    s_req_buf[0] = '\0';
 
     tcp_arg(client_pcb, NULL);
     tcp_err(client_pcb, on_client_err);
@@ -296,13 +320,18 @@ void wifi_http_poll(void) {
         char ssid_sel[64]    = {0};
         char ssid_manual[64] = {0};
         char password[128]   = {0};
+        char admin_token[128] = {0};
 
         extract_field(s_post_body, "ssid",        ssid_sel,    sizeof(ssid_sel));
         extract_field(s_post_body, "ssid_manual", ssid_manual, sizeof(ssid_manual));
         extract_field(s_post_body, "password",    password,    sizeof(password));
+        extract_field(s_post_body, "admin_token", admin_token, sizeof(admin_token));
 
         /* Resolve effective SSID: selected list entry, else manual entry */
         const char *effective_ssid = ssid_sel[0] ? ssid_sel : ssid_manual;
+        printf("[wifi_http] ssid_sel=[%s] ssid_manual=[%s] password_len=%d\n",
+               ssid_sel, ssid_manual, (int)strlen(password));
+        printf("[wifi_http] effective SSID=[%s]\n", effective_ssid);
 
         /* Server-side validation (FR-006c, FR-007, T019) */
         if (effective_ssid[0] == '\0') {
@@ -332,12 +361,23 @@ void wifi_http_poll(void) {
                               s_page_buf, body_len > 0 ? body_len : 0);
             return;
         }
+        if (strlen(admin_token) > WIFI_ADMIN_TOKEN_MAX_LEN) {
+            int body_len = wifi_web_build_error_page(
+                s_page_buf, sizeof(s_page_buf),
+                "Admin token is too long (max 63 characters).");
+            if (s_client_pcb)
+                send_response(s_client_pcb, 400, "Bad Request",
+                              s_page_buf, body_len > 0 ? body_len : 0);
+            return;
+        }
 
         /* Store credentials and send the Connecting page */
         strncpy(s_pending_creds.ssid, effective_ssid, WIFI_SSID_MAX_LEN);
         s_pending_creds.ssid[WIFI_SSID_MAX_LEN] = '\0';
         strncpy(s_pending_creds.password, password, WIFI_PASS_MAX_LEN);
         s_pending_creds.password[WIFI_PASS_MAX_LEN] = '\0';
+        strncpy(s_pending_creds.admin_token, admin_token, WIFI_ADMIN_TOKEN_MAX_LEN);
+        s_pending_creds.admin_token[WIFI_ADMIN_TOKEN_MAX_LEN] = '\0';
 
         int body_len = wifi_web_build_connecting_page(
             s_page_buf, sizeof(s_page_buf), effective_ssid);

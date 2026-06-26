@@ -11,17 +11,17 @@ extern "C" {
 /*
  * Flash layout (last 4 KB sector of 2 MB flash):
  *
- *   Offset  Size  Field
- *   0       4     magic  (0xC0FFEE01 = valid record)
- *   4       33    ssid   (null-terminated, ≤32 chars)
- *   37      64    password (null-terminated, ≤63 chars)
- *   101     1     flags  (reserved, 0x00)
- *   102     4     crc32  (CRC-32 of bytes 0–101)
- *   106     …     padding (0xFF)
+ * V1 record (legacy, still readable):
+ *   magic + ssid + password + flags + crc32
+ *
+ * V2 record (current):
+ *   magic + version + ssid + password + admin_token + flags + crc32
  *
  * XIP base address: 0x101FF000 (PICO_FLASH_SIZE_BYTES = 2 MB, sector = 4 KB)
  */
-#define WIFI_FLASH_MAGIC        0xC0FFEE01UL
+#define WIFI_FLASH_MAGIC_V1     0xC0FFEE01UL
+#define WIFI_FLASH_MAGIC_V2     0xC0FFEE02UL
+#define WIFI_FLASH_VERSION_V2   2u
 #define WIFI_FLASH_SECTOR_SIZE  4096u
 
 /*

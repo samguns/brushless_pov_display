@@ -1,2 +1,17 @@
 build
 .vscode/*
+bin/
+obj/
+out/
+*.o
+*.a
+*.so
+*.dll
+*.exe
+*.log
+.env*
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp

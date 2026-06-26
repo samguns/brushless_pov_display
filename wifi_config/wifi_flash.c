@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 
 #include "hardware/flash.h"
@@ -14,17 +15,28 @@
 /* XIP base address of the credential sector */
 #define WIFI_XIP_BASE       (XIP_BASE + WIFI_FLASH_OFFSET)
 
-/* In-flash record layout — must stay at 106 bytes of meaningful data */
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     char     ssid[33];
     char     password[64];
     uint8_t  flags;
     uint32_t crc32;
-} wifi_flash_record_t;
+} wifi_flash_record_v1_t;
 
-_Static_assert(sizeof(wifi_flash_record_t) == 106,
-    "wifi_flash_record_t size changed — update data-model.md");
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint8_t  version;
+    char     ssid[33];
+    char     password[64];
+    char     admin_token[64];
+    uint8_t  flags;
+    uint32_t crc32;
+} wifi_flash_record_v2_t;
+
+_Static_assert(sizeof(wifi_flash_record_v1_t) == 106,
+    "wifi_flash_record_v1_t size changed unexpectedly");
+_Static_assert(sizeof(wifi_flash_record_v2_t) == 171,
+    "wifi_flash_record_v2_t size changed unexpectedly");
 
 /* --------------------------------------------------------------------
  * CRC-32 (ISO 3309 / IEEE 802.3 polynomial 0xEDB88320, bit-reverse)
@@ -43,34 +55,52 @@ static uint32_t crc32_compute(const uint8_t *data, size_t len) {
 /* ------------------------------------------------------------------ */
 
 bool load_credentials(wifi_credentials_t *out) {
-    const wifi_flash_record_t *rec = (const wifi_flash_record_t *)WIFI_XIP_BASE;
+    const uint32_t magic = *(const uint32_t *)WIFI_XIP_BASE;
+    memset(out, 0, sizeof(*out));
 
-    if (rec->magic != WIFI_FLASH_MAGIC) {
-        printf("[wifi_flash] no valid magic (0x%08X)\n", rec->magic);
-        return false;
+    if (magic == WIFI_FLASH_MAGIC_V2) {
+        const wifi_flash_record_v2_t *rec = (const wifi_flash_record_v2_t *)WIFI_XIP_BASE;
+        uint32_t expected = crc32_compute((const uint8_t *)rec,
+                                          offsetof(wifi_flash_record_v2_t, crc32));
+        if (rec->version != WIFI_FLASH_VERSION_V2 || rec->crc32 != expected) {
+            printf("[wifi_flash] invalid V2 record (version=%u, crc=0x%08X/0x%08X)\n",
+                   (unsigned)rec->version, rec->crc32, expected);
+            return false;
+        }
+        if (rec->ssid[0] == '\0') {
+            printf("[wifi_flash] empty SSID in V2 record\n");
+            return false;
+        }
+
+        strncpy(out->ssid, rec->ssid, WIFI_SSID_MAX_LEN);
+        out->ssid[WIFI_SSID_MAX_LEN] = '\0';
+        strncpy(out->password, rec->password, WIFI_PASS_MAX_LEN);
+        out->password[WIFI_PASS_MAX_LEN] = '\0';
+        strncpy(out->admin_token, rec->admin_token, WIFI_ADMIN_TOKEN_MAX_LEN);
+        out->admin_token[WIFI_ADMIN_TOKEN_MAX_LEN] = '\0';
+        printf("[wifi_flash] loaded V2 credentials for SSID: %s\n", out->ssid);
+        return true;
     }
 
-    /* CRC covers bytes 0..101 (everything before the crc32 field) */
-    uint32_t expected = crc32_compute((const uint8_t *)rec,
-                                      offsetof(wifi_flash_record_t, crc32));
-    if (rec->crc32 != expected) {
-        printf("[wifi_flash] CRC mismatch (stored 0x%08X, computed 0x%08X)\n",
-               rec->crc32, expected);
-        return false;
+    if (magic == WIFI_FLASH_MAGIC_V1) {
+        const wifi_flash_record_v1_t *legacy = (const wifi_flash_record_v1_t *)WIFI_XIP_BASE;
+        uint32_t expected = crc32_compute((const uint8_t *)legacy,
+                                          offsetof(wifi_flash_record_v1_t, crc32));
+        if (legacy->crc32 != expected || legacy->ssid[0] == '\0') {
+            printf("[wifi_flash] invalid V1 record\n");
+            return false;
+        }
+        strncpy(out->ssid, legacy->ssid, WIFI_SSID_MAX_LEN);
+        out->ssid[WIFI_SSID_MAX_LEN] = '\0';
+        strncpy(out->password, legacy->password, WIFI_PASS_MAX_LEN);
+        out->password[WIFI_PASS_MAX_LEN] = '\0';
+        out->admin_token[0] = '\0';
+        printf("[wifi_flash] loaded legacy credentials for SSID: %s\n", out->ssid);
+        return true;
     }
 
-    if (rec->ssid[0] == '\0') {
-        printf("[wifi_flash] empty SSID\n");
-        return false;
-    }
-
-    strncpy(out->ssid, rec->ssid, WIFI_SSID_MAX_LEN);
-    out->ssid[WIFI_SSID_MAX_LEN] = '\0';
-    strncpy(out->password, rec->password, WIFI_PASS_MAX_LEN);
-    out->password[WIFI_PASS_MAX_LEN] = '\0';
-
-    printf("[wifi_flash] loaded credentials for SSID: %s\n", out->ssid);
-    return true;
+    printf("[wifi_flash] no valid magic (0x%08X)\n", magic);
+    return false;
 }
 
 bool save_credentials(const wifi_credentials_t *creds) {
@@ -79,17 +109,21 @@ bool save_credentials(const wifi_credentials_t *creds) {
     static uint8_t sector_buf[WIFI_FLASH_SECTOR_SIZE];
     memset(sector_buf, 0xFF, sizeof(sector_buf));
 
-    wifi_flash_record_t *rec = (wifi_flash_record_t *)sector_buf;
-    rec->magic = WIFI_FLASH_MAGIC;
+        wifi_flash_record_v2_t *rec = (wifi_flash_record_v2_t *)sector_buf;
+        rec->magic = WIFI_FLASH_MAGIC_V2;
+        rec->version = WIFI_FLASH_VERSION_V2;
     strncpy(rec->ssid, creds->ssid, 32);
     rec->ssid[32] = '\0';
     strncpy(rec->password, creds->password, 63);
     rec->password[63] = '\0';
+        strncpy(rec->admin_token, creds->admin_token, 63);
+        rec->admin_token[63] = '\0';
     rec->flags = 0x00;
     rec->crc32 = crc32_compute(sector_buf,
-                               offsetof(wifi_flash_record_t, crc32));
+                       offsetof(wifi_flash_record_v2_t, crc32));
 
-    printf("[wifi_flash] writing credentials for SSID: %s\n", creds->ssid);
+        printf("[wifi_flash] writing credentials for SSID: %s (token_len=%u)\n",
+            creds->ssid, (unsigned)strlen(creds->admin_token));
 
     /* Erase + program with interrupts disabled (FR-011, constitution IV) */
     uint32_t ints = save_and_disable_interrupts();
@@ -98,10 +132,12 @@ bool save_credentials(const wifi_credentials_t *creds) {
     restore_interrupts(ints);
 
     /* Verify write succeeded by re-reading (FR-014) */
-    const wifi_flash_record_t *stored =
-        (const wifi_flash_record_t *)WIFI_XIP_BASE;
-    bool ok = (stored->magic == WIFI_FLASH_MAGIC &&
-               strncmp(stored->ssid, creds->ssid, 32) == 0);
+    const wifi_flash_record_v2_t *stored =
+        (const wifi_flash_record_v2_t *)WIFI_XIP_BASE;
+    bool ok = (stored->magic == WIFI_FLASH_MAGIC_V2 &&
+               stored->version == WIFI_FLASH_VERSION_V2 &&
+               strncmp(stored->ssid, creds->ssid, 32) == 0 &&
+               strncmp(stored->admin_token, creds->admin_token, 63) == 0);
 
     if (!ok) {
         printf("[wifi_flash] verify FAILED after write\n");

@@ -37,6 +37,8 @@ pico_sdk_init()
 
 add_executable(pov_leds
         pov_leds.cpp
+        ws2812_driver.cpp
+        pov_demo.cpp
         dhcpserver.c
         wifi_config/wifi_config.c
         wifi_config/wifi_flash.c
@@ -44,17 +46,30 @@ add_executable(pov_leds
         wifi_config/wifi_web.c
         wifi_config/wifi_http.c
         wifi_config/wifi_dns.c
+        wifi_config/wifi_sta_web.c
+        wifi_config/wifi_sta_http.c
 )
 
 pico_set_program_name(pov_leds "pov_leds")
 pico_set_program_version(pov_leds "0.1")
 
+# feature 002: reserve the last 4 KB flash sector for WiFi credentials so a UF2
+# firmware update cannot overwrite them, with a build-time ASSERT guard.
+# See specs/002-sta-portal-fw-update/ (research.md RES-001, data-model.md).
+pico_set_linker_script(pov_leds ${CMAKE_CURRENT_LIST_DIR}/memmap_wifi_creds.ld)
+
 # Generate PIO header
 pico_generate_pio_header(pov_leds ${CMAKE_CURRENT_LIST_DIR}/blink.pio)
 
-# Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(pov_leds 1)
-pico_enable_stdio_usb(pov_leds 0)
+# Development validation mode: USB stdio enabled for runtime logging.
+# Release builds should set POV_DEMO_DEV_USB_STDIO=OFF.
+option(POV_DEMO_DEV_USB_STDIO "Enable USB stdio for POV demo validation" ON)
+pico_enable_stdio_uart(pov_leds 0)
+if(POV_DEMO_DEV_USB_STDIO)
+        pico_enable_stdio_usb(pov_leds 1)
+else()
+        pico_enable_stdio_usb(pov_leds 0)
+endif()
 
 # Add the standard library to the build
 target_link_libraries(pov_leds
@@ -69,6 +84,7 @@ target_include_directories(pov_leds PRIVATE
 # Add any user requested libraries
 target_link_libraries(pov_leds 
         hardware_pio
+        hardware_dma
         hardware_timer
         hardware_clocks
         hardware_flash
