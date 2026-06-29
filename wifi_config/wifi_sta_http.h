@@ -2,6 +2,7 @@
 #define WIFI_STA_HTTP_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -53,6 +54,27 @@ void wifi_sta_http_set_runtime_status(const char *connectivity_state,
 
 /* Configure/update the shared admin token used for mutating endpoints. */
 void wifi_sta_http_set_admin_token(const char *token);
+
+/*
+ * Deferred Wi-Fi reconfiguration (feature 006).
+ *
+ * A valid POST /config stages a credential change and replies with an "applying"
+ * page; the runtime loop flushes the response, then performs the switch so the
+ * client receives feedback before the link drops.
+ */
+
+/* True when a validated credential change is staged and awaiting application. */
+bool wifi_sta_http_change_pending(void);
+
+/* Copy the staged SSID/password into the provided buffers. */
+void wifi_sta_http_get_pending_change(char *ssid, size_t ssid_len,
+                                      char *password, size_t password_len);
+
+/* Clear the staged change after it has been applied. */
+void wifi_sta_http_clear_change_pending(void);
+
+/* Record the outcome of the last applied change for display as a banner. */
+void wifi_sta_http_set_reconfig_result(bool success, const char *message);
 
 #ifdef __cplusplus
 }

@@ -1,11 +1,12 @@
-/* Custom RP2040 linker script for the pov_leds project (feature 002).
+/* Custom RP2350 linker script for the pov_leds project (feature 002).
  *
- * Derived from the Pico SDK 2.2.0 memmap_default.ld with ONE functional change:
- * the linkable FLASH region is shortened by the last 4 KB sector so that the
- * firmware binary can never occupy it.  That last sector
- * (PICO_FLASH_SIZE_BYTES - 4096 = offset 0x1FF000, XIP 0x101FF000) holds the
- * WiFi credential record (see specs/002-sta-portal-fw-update/data-model.md and
- * wifi_config/wifi_flash.c).
+ * Derived from the Pico SDK 2.2.0 RP2350 memmap_default.ld
+ * (src/rp2_common/pico_crt0/rp2350/memmap_default.ld) with ONE functional
+ * change: the linkable FLASH region is shortened by the last 4 KB sector so
+ * that the firmware binary can never occupy it.  That last sector
+ * (PICO_FLASH_SIZE_BYTES - 4096) holds the WiFi credential record (see
+ * specs/002-sta-portal-fw-update/data-model.md and wifi_config/wifi_flash.c,
+ * which targets PICO_FLASH_SIZE_BYTES - WIFI_FLASH_SECTOR_SIZE).
  *
  * Because no linker section is placed in the reserved sector, it is never
  * emitted into the UF2 image, so a normal UF2 firmware update does not erase or
@@ -14,8 +15,8 @@
  * An explicit ASSERT (see end of SECTIONS) fails the build with a clear message
  * if the firmware would overflow into the reserved sector (FR-003, SC-005).
  *
- * Keep this file in sync with the SDK memmap_default.ld on SDK upgrades; only
- * the FLASH MEMORY line and the trailing credential-boundary ASSERT differ.
+ * Keep this file in sync with the SDK RP2350 memmap_default.ld on SDK upgrades;
+ * only the FLASH MEMORY line and the trailing credential-boundary ASSERT differ.
  *
    Defines the following symbols for use by code:
     __exidx_start
@@ -42,40 +43,31 @@
 MEMORY
 {
     /* CHANGED from `INCLUDE "pico_flash_region.ld"`: reserve the last 4 KB
-       sector for the WiFi credential record. */
-    FLASH(rx) : ORIGIN = 0x10000000, LENGTH = (2 * 1024 * 1024) - 4096
-    RAM(rwx) : ORIGIN =  0x20000000, LENGTH = 256k
-    SCRATCH_X(rwx) : ORIGIN = 0x20040000, LENGTH = 4k
-    SCRATCH_Y(rwx) : ORIGIN = 0x20041000, LENGTH = 4k
+       sector for the WiFi credential record. The Pimoroni Pico Plus 2 W
+       (RP2350B) has 16 MB of flash; keep this in sync with the board's
+       PICO_FLASH_SIZE_BYTES (set via PICO_BOARD in CMakeLists.txt). */
+    FLASH(rx) : ORIGIN = 0x10000000, LENGTH = (16 * 1024 * 1024) - 4096
+    RAM(rwx) : ORIGIN =  0x20000000, LENGTH = 512k
+    SCRATCH_X(rwx) : ORIGIN = 0x20080000, LENGTH = 4k
+    SCRATCH_Y(rwx) : ORIGIN = 0x20081000, LENGTH = 4k
 }
 
 ENTRY(_entry_point)
 
 SECTIONS
 {
-    /* Second stage bootloader is prepended to the image. It must be 256 bytes big
-       and checksummed. It is usually built by the boot_stage2 target
-       in the Raspberry Pi Pico SDK
-    */
-
     .flash_begin : {
         __flash_binary_start = .;
     } > FLASH
 
-    .boot2 : {
-        __boot2_start__ = .;
-        KEEP (*(.boot2))
-        __boot2_end__ = .;
-    } > FLASH
+    /* The bootrom will enter the image at the point indicated in your
+       IMAGE_DEF, which is usually the reset handler of your vector table.
 
-    ASSERT(__boot2_end__ - __boot2_start__ == 256,
-        "ERROR: Pico second stage bootloader must be 256 bytes in size")
-
-    /* The second stage will always enter the image at the start of .text.
        The debugger will use the ELF entry point, which is the _entry_point
-       symbol if present, otherwise defaults to start of .text.
-       This can be used to transfer control back to the bootrom on debugger
-       launches only, to perform proper flash setup.
+       symbol, and in our case is *different from the bootrom's entry point.*
+       This is used to go back through the bootrom on debugger launches only,
+       to perform the same initial flash setup that would be performed on a
+       cold boot.
     */
 
     .text : {
@@ -90,6 +82,7 @@ SECTIONS
         /* bit of a hack right now to exclude all floating point and time critical (e.g. memset, memcpy) code from
          * FLASH ... we will include any thing excluded here in .data below by default */
         *(.init)
+        *libgcc.a:cmse_nonsecure_call.o
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .text*)
         *(.fini)
         /* Pull all c'tors into .text */
@@ -130,8 +123,30 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
+    /* Note the boot2 section is optional, and should be discarded if there is
+       no reference to it *inside* the binary, as it is not called by the
+       bootrom. (The bootrom performs a simple best-effort XIP setup and
+       leaves it to the binary to do anything more sophisticated.) However
+       there is still a size limit of 256 bytes, to ensure the boot2 can be
+       stored in boot RAM.
+
+       Really this is a "XIP setup function" -- the name boot2 is historic and
+       refers to its dual-purpose on RP2040, where it also handled vectoring
+       from the bootrom into the user image.
+    */
+
+    .boot2 : {
+        __boot2_start__ = .;
+        *(.boot2)
+        __boot2_end__ = .;
+    } > FLASH
+
+    ASSERT(__boot2_end__ - __boot2_start__ <= 256,
+        "ERROR: Pico second stage bootloader must be no more than 256 bytes in size")
+
     .rodata : {
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .rodata*)
+        *(.srodata*)
         . = ALIGN(4);
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
         . = ALIGN(4);
@@ -182,6 +197,7 @@ SECTIONS
         . = ALIGN(4);
 
         *(.data*)
+        *(.sdata*)
 
         . = ALIGN(4);
         *(.after_data.*)
@@ -192,7 +208,6 @@ SECTIONS
         KEEP(*(.mutex_array))
         PROVIDE_HIDDEN (__mutex_array_end = .);
 
-        . = ALIGN(4);
         *(.jcr)
         . = ALIGN(4);
     } > RAM AT> FLASH
@@ -224,6 +239,8 @@ SECTIONS
 
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.bss*)))
         *(COMMON)
+        PROVIDE(__global_pointer$ = . + 2K);
+        *(.sbss*)
         . = ALIGN(4);
         __bss_end__ = .;
     } > RAM
@@ -276,7 +293,7 @@ SECTIONS
     .flash_end : {
         KEEP(*(.embedded_end_block*))
         PROVIDE(__flash_binary_end = .);
-    } > FLASH
+    } > FLASH =0xaa
 
     /* stack limit is poorly named, but historically is maximum heap ptr */
     __StackLimit = ORIGIN(RAM) + LENGTH(RAM);
@@ -300,12 +317,12 @@ SECTIONS
     /* Check if data + heap + stack exceeds RAM limit */
     ASSERT(__StackLimit >= __HeapLimit, "region RAM overflowed")
 
-    ASSERT( __binary_info_header_end - __logical_binary_start <= 256, "Binary info must be in first 256 bytes of the binary")
-    /* todo assert on extra code */
+    ASSERT( __binary_info_header_end - __logical_binary_start <= 1024, "Binary info must be in first 1024 bytes of the binary")
+    ASSERT( __embedded_block_end - __logical_binary_start <= 4096, "Embedded block must be in first 4096 bytes of the binary")
 
     /* feature 002 (FR-003 / SC-005): fail the build if the firmware binary would
        grow into the reserved last-4 KB WiFi credential sector. ORIGIN(FLASH) +
-       LENGTH(FLASH) is the first byte of the reserved region (0x101FF000). */
+       LENGTH(FLASH) is the first byte of the reserved region. */
     ASSERT( __flash_binary_end <= ORIGIN(FLASH) + LENGTH(FLASH),
         "ERROR: firmware overflows reserved WiFi credential sector (last 4 KB)")
 }

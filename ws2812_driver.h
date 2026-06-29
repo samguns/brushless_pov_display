@@ -51,6 +51,10 @@ typedef struct {
 
     led_strip_config_t strip;
     output_health_state_t health;
+
+    /* Global output brightness 0..255 (feature 007). 255 = full (no scaling).
+     * Applied to GRB pixel data only — never affects WS2812 bit timing. */
+    uint8_t brightness;
 } ws2812_driver_t;
 
 void ws2812_driver_init_defaults(ws2812_driver_t *driver);
@@ -66,6 +70,10 @@ bool ws2812_driver_init(ws2812_driver_t *driver,
 void ws2812_driver_deinit(ws2812_driver_t *driver);
 
 bool ws2812_driver_set_led_count(ws2812_driver_t *driver, int requested_led_count);
+
+/* Set the global output brightness (0..255). 255 = full intensity (no scaling).
+ * Scales GRB pixel values only; does not change WS2812 bit timing. */
+void ws2812_driver_set_brightness(ws2812_driver_t *driver, uint8_t brightness);
 
 bool ws2812_driver_submit_frame(ws2812_driver_t *driver,
                                 const uint32_t *frame,

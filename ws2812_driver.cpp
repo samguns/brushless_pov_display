@@ -53,6 +53,14 @@ void ws2812_driver_init_defaults(ws2812_driver_t *driver) {
     driver->dma_chan = -1;
     driver->strip.max_count = POV_LED_MAX_COUNT;
     driver->ws2812_bit_hz = kWs2812BitRateHz;
+    driver->brightness = 255;  /* full intensity by default (no scaling) */
+}
+
+void ws2812_driver_set_brightness(ws2812_driver_t *driver, uint8_t brightness) {
+    if (driver == nullptr) {
+        return;
+    }
+    driver->brightness = brightness;
 }
 
 bool ws2812_driver_set_led_count(ws2812_driver_t *driver, int requested_led_count) {
@@ -169,7 +177,30 @@ bool ws2812_driver_submit_frame(ws2812_driver_t *driver,
         return false;
     }
 
-    dma_channel_set_read_addr((uint)driver->dma_chan, frame, false);
+    const uint32_t *src = frame;
+
+    // Apply global brightness by scaling the 24-bit GRB pixel values into a
+    // driver-owned buffer (the DMA reads asynchronously from this address, so it
+    // must persist until the transfer completes — guaranteed by the caller
+    // waiting for !dma_busy before the next submit). Pixel data only; the PIO
+    // bit timing is untouched (constitution I & II).
+    if (driver->brightness < 255) {
+        static uint32_t scaled[POV_LED_MAX_COUNT];
+        uint32_t b = driver->brightness;
+        for (size_t i = 0; i < frame_words; ++i) {
+            uint32_t w = frame[i];
+            uint32_t g = (w >> 16) & 0xFFu;
+            uint32_t r = (w >> 8) & 0xFFu;
+            uint32_t bl = w & 0xFFu;
+            g = (g * b) / 255u;
+            r = (r * b) / 255u;
+            bl = (bl * b) / 255u;
+            scaled[i] = (g << 16) | (r << 8) | bl;
+        }
+        src = scaled;
+    }
+
+    dma_channel_set_read_addr((uint)driver->dma_chan, src, false);
     dma_channel_set_trans_count((uint)driver->dma_chan, frame_words, true);
 
     return true;

@@ -38,6 +38,8 @@ typedef struct {
 
     bool blink_active;
     uint32_t blink_frequency_hz;
+
+    uint8_t brightness;   /* display brightness percent, 0..100 (feature 007) */
 } wifi_runtime_state_t;
 
 static wifi_runtime_state_t s_runtime;
@@ -186,6 +188,7 @@ bool wifi_config_sta_runtime_init(void) {
     }
 
     refresh_active_ip();
+    s_runtime.brightness = load_brightness();
     wifi_sta_http_set_admin_token(s_runtime.creds.admin_token);
     wifi_sta_http_start(s_runtime.creds.ssid, s_runtime.active_ip);
 
@@ -210,6 +213,29 @@ void wifi_config_runtime_step(void) {
                                          s_runtime.blink_active,
                                          s_runtime.blink_frequency_hz);
         wifi_sta_http_poll();
+
+        /* Deferred Wi-Fi reconfiguration (feature 006): flush the "applying"
+         * reply, then switch networks. Done here (not in the recv callback) so
+         * the client receives feedback before the link drops. */
+        if (wifi_sta_http_change_pending()) {
+            char new_ssid[WIFI_SSID_MAX_LEN + 1];
+            char new_pass[WIFI_PASS_MAX_LEN + 1];
+            wifi_sta_http_get_pending_change(new_ssid, sizeof(new_ssid),
+                                             new_pass, sizeof(new_pass));
+
+            absolute_time_t flush_deadline = make_timeout_time_ms(500);
+            while (!time_reached(flush_deadline)) {
+                cyw43_arch_poll();
+                sleep_ms(10);
+            }
+
+            bool ok = wifi_config_apply_credentials(new_ssid, new_pass);
+            wifi_sta_http_set_reconfig_result(
+                ok, ok ? "Wi-Fi network updated successfully."
+                       : "Could not join that network; reverted to the previous one.");
+            wifi_sta_http_clear_change_pending();
+            return;
+        }
     }
 
     int link = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
@@ -278,6 +304,91 @@ void wifi_config_runtime_step(void) {
     }
 }
 
+static bool reconnect_with(const wifi_credentials_t *creds) {
+    cyw43_arch_disable_sta_mode();
+    cyw43_arch_enable_sta_mode();
+    wifi_err_t err = WIFI_ERR_NONE;
+    if (!try_sta_blocking(creds, STA_CONNECT_TIMEOUT_MS, &err)) {
+        return false;
+    }
+    s_runtime.creds = *creds;
+    s_runtime.creds_loaded = true;
+    refresh_active_ip();
+    s_runtime.connectivity_state = WIFI_CONN_CONNECTED;
+    s_runtime.reconnect_started_ms = 0;
+    s_runtime.last_reconnect_attempt_ms = 0;
+    wifi_sta_http_set_admin_token(s_runtime.creds.admin_token);
+    wifi_sta_http_start(s_runtime.creds.ssid, s_runtime.active_ip);
+    s_runtime.portal_started = true;
+    return true;
+}
+
+bool wifi_config_apply_credentials(const char *ssid, const char *password) {
+    if (ssid == NULL || ssid[0] == '\0') {
+        return false;
+    }
+
+    /* Keep the current working set as a backup for revert-on-failure. */
+    wifi_credentials_t backup = s_runtime.creds;
+
+    wifi_credentials_t candidate;
+    memset(&candidate, 0, sizeof(candidate));
+    strncpy(candidate.ssid, ssid, WIFI_SSID_MAX_LEN);
+    candidate.ssid[WIFI_SSID_MAX_LEN] = '\0';
+    strncpy(candidate.password, password ? password : "", WIFI_PASS_MAX_LEN);
+    candidate.password[WIFI_PASS_MAX_LEN] = '\0';
+    /* Preserve the existing admin token across the change. */
+    strncpy(candidate.admin_token, backup.admin_token, WIFI_ADMIN_TOKEN_MAX_LEN);
+    candidate.admin_token[WIFI_ADMIN_TOKEN_MAX_LEN] = '\0';
+
+    WIFI_LOG_CONN("reconfig: applying SSID=%s pw_len=%u",
+                  candidate.ssid, (unsigned)strlen(candidate.password));
+
+    /* Tear down the portal and current link to test the candidate network. */
+    if (s_runtime.portal_started) {
+        wifi_sta_http_stop();
+        s_runtime.portal_started = false;
+    }
+
+    cyw43_arch_disable_sta_mode();
+    cyw43_arch_enable_sta_mode();
+
+    wifi_err_t err = WIFI_ERR_NONE;
+    if (try_sta_blocking(&candidate, STA_CONNECT_TIMEOUT_MS, &err)) {
+        if (save_credentials(&candidate)) {
+            s_runtime.creds = candidate;
+            s_runtime.creds_loaded = true;
+            refresh_active_ip();
+            s_runtime.connectivity_state = WIFI_CONN_CONNECTED;
+            s_runtime.reconnect_started_ms = 0;
+            s_runtime.last_reconnect_attempt_ms = 0;
+            wifi_sta_http_set_admin_token(s_runtime.creds.admin_token);
+            wifi_sta_http_start(s_runtime.creds.ssid, s_runtime.active_ip);
+            s_runtime.portal_started = true;
+            WIFI_LOG_CONN("reconfig: success SSID=%s IP=%s",
+                          s_runtime.creds.ssid, s_runtime.active_ip);
+            return true;
+        }
+        WIFI_LOG_CONN("reconfig: save_credentials failed; reverting");
+    } else {
+        WIFI_LOG_CONN("reconfig: connect failed (err=%d); reverting", (int)err);
+    }
+
+    /* Revert to the previously working network. */
+    if (reconnect_with(&backup)) {
+        WIFI_LOG_CONN("reconfig: reverted to SSID=%s IP=%s",
+                      s_runtime.creds.ssid, s_runtime.active_ip);
+    } else {
+        /* Could not even rejoin the previous network; hand off to the runtime
+         * reconnect / AP-fallback path. */
+        s_runtime.connectivity_state = WIFI_CONN_DISCONNECTED;
+        s_runtime.reconnect_started_ms = now_ms();
+        s_runtime.last_reconnect_attempt_ms = 0;
+        WIFI_LOG_CONN("reconfig: revert reconnect failed; entering recovery");
+    }
+    return false;
+}
+
 wifi_connectivity_state_t wifi_config_get_connectivity_state(void) {
     return s_runtime.connectivity_state;
 }
@@ -308,4 +419,21 @@ bool wifi_config_get_blink_active(void) {
 
 uint32_t wifi_config_get_blink_frequency_hz(void) {
     return s_runtime.blink_frequency_hz;
+}
+
+uint8_t wifi_config_get_brightness(void) {
+    return s_runtime.brightness;
+}
+
+void wifi_config_set_brightness(uint8_t brightness_pct) {
+    if (brightness_pct > 100u) brightness_pct = 100u;
+    if (brightness_pct == s_runtime.brightness) {
+        return;  /* unchanged: apply nothing, skip flash write (wear) */
+    }
+    s_runtime.brightness = brightness_pct;
+    if (!save_brightness(brightness_pct)) {
+        WIFI_LOG_CONN("brightness persist failed (%u%%)", (unsigned)brightness_pct);
+    } else {
+        WIFI_LOG_CONN("brightness set %u%%", (unsigned)brightness_pct);
+    }
 }

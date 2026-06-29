@@ -59,6 +59,22 @@ bool wifi_config_sta_runtime_init(void);
  */
 void wifi_config_runtime_step(void);
 
+/*
+ * wifi_config_apply_credentials() — switch to a new Wi-Fi network at runtime.
+ *
+ * Backs up the current working credentials, then disconnects and test-connects
+ * to (ssid, password) within a bounded timeout. The existing admin_token is
+ * preserved.
+ *   On success: persists the new credentials, refreshes the active IP, restarts
+ *               the STA portal on the new network, and returns true.
+ *   On failure: reverts to the previously working credentials (reconnecting and
+ *               restarting the portal) and returns false.
+ *
+ * Blocks for the bounded connection attempt; intended to be called from the
+ * runtime step after the HTTP response has been flushed.
+ */
+bool wifi_config_apply_credentials(const char *ssid, const char *password);
+
 /* Runtime status accessors for status/reporting endpoints. */
 wifi_connectivity_state_t wifi_config_get_connectivity_state(void);
 const char *wifi_config_get_connectivity_state_text(void);
@@ -69,6 +85,16 @@ const char *wifi_config_get_active_ip(void);
 void wifi_config_set_blink_status(bool active, uint32_t frequency_hz);
 bool wifi_config_get_blink_active(void);
 uint32_t wifi_config_get_blink_frequency_hz(void);
+
+/*
+ * Display brightness (feature 007). Value is a percentage 0..100. Loaded from
+ * flash at runtime init and applied to the LED panel by the main loop.
+ *   wifi_config_get_brightness() — current brightness percent (0..100).
+ *   wifi_config_set_brightness() — clamp to 0..100, update runtime, and persist
+ *     to flash only when the value changed (write-on-change to limit wear).
+ */
+uint8_t wifi_config_get_brightness(void);
+void wifi_config_set_brightness(uint8_t brightness_pct);
 
 #ifdef __cplusplus
 }

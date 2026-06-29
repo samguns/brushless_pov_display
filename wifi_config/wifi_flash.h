@@ -21,8 +21,13 @@ extern "C" {
  */
 #define WIFI_FLASH_MAGIC_V1     0xC0FFEE01UL
 #define WIFI_FLASH_MAGIC_V2     0xC0FFEE02UL
+#define WIFI_FLASH_MAGIC_V3     0xC0FFEE03UL
 #define WIFI_FLASH_VERSION_V2   2u
+#define WIFI_FLASH_VERSION_V3   3u
 #define WIFI_FLASH_SECTOR_SIZE  4096u
+
+/* Default display brightness (percent) when no V3 record is present. */
+#define WIFI_FLASH_DEFAULT_BRIGHTNESS  100u
 
 /*
  * load_credentials() — read and validate a credential record from flash.
@@ -43,6 +48,22 @@ bool save_credentials(const wifi_credentials_t *creds);
  * clear_credentials() — erase the flash sector (invalidates stored record).
  */
 void clear_credentials(void);
+
+/*
+ * load_brightness() — read the persisted display brightness (percent, 0..100)
+ * from the V3 record. Returns WIFI_FLASH_DEFAULT_BRIGHTNESS if no V3 record is
+ * present (e.g. a legacy V1/V2 record or empty sector).
+ */
+uint8_t load_brightness(void);
+
+/*
+ * save_brightness() — persist a new display brightness (percent, 0..100),
+ * preserving the currently stored credentials/token (read-modify-write into a
+ * V3 record via the same atomic erase+write+verify path as save_credentials).
+ * Returns true on success, false if no credentials are stored or the write
+ * could not be verified.
+ */
+bool save_brightness(uint8_t brightness_pct);
 
 #ifdef __cplusplus
 }
