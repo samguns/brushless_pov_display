@@ -5,7 +5,7 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 
-#include "blink.pio.h"
+#include "ws2812.pio.h"
 #include "pov_demo.h"
 #include "ws2812_driver.h"
 #include "hall_sensor.h"

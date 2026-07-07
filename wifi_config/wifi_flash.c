@@ -9,7 +9,7 @@
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 
-/* Flash sector offset from the start of flash (last 4 KB sector of 2 MB) */
+/* Flash sector offset from the start of flash (last 4 KB sector). */
 #define WIFI_FLASH_OFFSET   (PICO_FLASH_SIZE_BYTES - WIFI_FLASH_SECTOR_SIZE)
 
 /* XIP base address of the credential sector */

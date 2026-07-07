@@ -22,6 +22,9 @@
 #define STA_PAGE_BUF_SIZE   16384
 #define STA_HDR_BUF_SIZE    256
 #define STA_REQ_BUF_SIZE    1024    /* request accumulation buffer         */
+#define STA_TCP_POLL_INTERVAL          2u     /* lwIP coarse ticks (~1 s) */
+#define STA_CLIENT_IDLE_TIMEOUT_MS     5000u  /* silent/preconnect socket */
+#define STA_CLIENT_PROGRESS_TIMEOUT_MS 10000u /* stalled request/response */
 
 /* ---- module state --------------------------------------------------- */
 
@@ -63,6 +66,7 @@ static char   s_page_buf[STA_PAGE_BUF_SIZE];
 static char   s_hdr_buf[STA_HDR_BUF_SIZE];
 static char   s_req_buf[STA_REQ_BUF_SIZE];
 static size_t s_req_len = 0;
+static uint32_t s_client_last_progress_ms = 0;
 
 /* Async response streaming: the redesigned pages can exceed TCP_SND_BUF, so the
  * body is sent in tcp_sndbuf()-sized chunks driven by the tcp_sent callback. The
@@ -143,14 +147,58 @@ static bool extract_header_value(const char *req, const char *header,
     return n > 0;
 }
 
-static void tx_finish(struct tcp_pcb *pcb) {
+static void mark_client_progress(void) {
+    s_client_last_progress_ms = now_ms();
+}
+
+static void clear_tx_state(void) {
     s_tx_active = false;
     s_tx_body   = NULL;
     s_tx_len    = 0;
     s_tx_sent   = 0;
+}
+
+static void clear_client_state(struct tcp_pcb *pcb) {
+    if (!pcb || s_client_pcb == pcb) {
+        s_client_pcb = NULL;
+        s_req_len    = 0;
+        s_req_buf[0] = '\0';
+        clear_tx_state();
+        s_client_last_progress_ms = 0;
+    }
+}
+
+static bool client_timed_out(void) {
+    if (!s_client_pcb || s_client_last_progress_ms == 0) return false;
+    uint32_t elapsed = now_ms() - s_client_last_progress_ms;
+    uint32_t limit = s_tx_active ? STA_CLIENT_PROGRESS_TIMEOUT_MS
+                                 : STA_CLIENT_IDLE_TIMEOUT_MS;
+    return elapsed > limit;
+}
+
+static void release_client(struct tcp_pcb *pcb, bool abort_client) {
+    if (!pcb) return;
+
+    tcp_arg(pcb, NULL);
     tcp_sent(pcb, NULL);
-    tcp_close(pcb);
-    if (s_client_pcb == pcb) s_client_pcb = NULL;
+    tcp_recv(pcb, NULL);
+    tcp_poll(pcb, NULL, 0);
+    tcp_err(pcb, NULL);
+
+    clear_client_state(pcb);
+
+    if (abort_client) {
+        tcp_abort(pcb);
+        return;
+    }
+
+    if (tcp_close(pcb) != ERR_OK) {
+        tcp_abort(pcb);
+    }
+}
+
+static void tx_finish(struct tcp_pcb *pcb) {
+    release_client(pcb, false);
 }
 
 /* Queue as much of the remaining body as the send buffer allows. Re-invoked by
@@ -166,6 +214,7 @@ static void tx_pump(struct tcp_pcb *pcb) {
         err_t werr = tcp_write(pcb, s_tx_body + s_tx_sent, chunk, flags);
         if (werr != ERR_OK) break;  /* ERR_MEM: retry on next sent/poll */
         s_tx_sent += chunk;
+        mark_client_progress();
     }
     tcp_output(pcb);
     if (s_tx_sent >= s_tx_len) tx_finish(pcb);
@@ -173,6 +222,7 @@ static void tx_pump(struct tcp_pcb *pcb) {
 
 static err_t on_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     (void)arg; (void)len;
+    mark_client_progress();
     if (s_tx_active) tx_pump(pcb);
     return ERR_OK;
 }
@@ -192,7 +242,14 @@ static void start_send(struct tcp_pcb *pcb, int status_code,
         "\r\n",
         status_code, status_text, content_type, body_len);
 
-    tcp_write(pcb, s_hdr_buf, (u16_t)hdr_len, TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
+    err_t herr = tcp_write(pcb, s_hdr_buf, (u16_t)hdr_len,
+                           TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
+    if (herr != ERR_OK) {
+        printf("[wifi_sta_http] header write failed: %d\n", (int)herr);
+        release_client(pcb, true);
+        return;
+    }
+    mark_client_progress();
 
     s_tx_body   = body;
     s_tx_len    = (body_len > 0) ? (size_t)body_len : 0;
@@ -226,8 +283,7 @@ static void send_redirect(struct tcp_pcb *pcb) {
         "\r\n";
     tcp_write(pcb, resp, (u16_t)strlen(resp), TCP_WRITE_FLAG_COPY);
     tcp_output(pcb);
-    tcp_close(pcb);
-    if (s_client_pcb == pcb) s_client_pcb = NULL;
+    release_client(pcb, false);
 }
 
 static bool auth_is_blocked(void) {
@@ -276,24 +332,16 @@ static void on_client_err(void *arg, err_t err) {
     if (err != ERR_ABRT && err != ERR_RST && err != ERR_CLSD) {
         printf("[wifi_sta_http] client error %d\n", (int)err);
     }
-    s_client_pcb = NULL;
-    s_req_len    = 0;
-    s_tx_active  = false;
-    s_tx_body    = NULL;
+    clear_client_state(NULL);
 }
 
 static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
     (void)arg;
     if (!p || err != ERR_OK) {
         if (p) pbuf_free(p);
-        tcp_close(pcb);
-        if (s_client_pcb == pcb) {
-            s_client_pcb = NULL;
-            s_req_len = 0;
-            s_tx_active = false;
-            s_tx_body = NULL;
-        }
-        return ERR_OK;
+        bool abort_client = (err != ERR_OK);
+        release_client(pcb, abort_client);
+        return abort_client ? ERR_ABRT : ERR_OK;
     }
 
     /* Accumulate request across multiple tcp_recv frames */
@@ -304,6 +352,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     s_req_buf[s_req_len] = '\0';
     pbuf_free(p);
     tcp_recved(pcb, copy_len);
+    mark_client_progress();
 
     const char *hdr_end = strstr(s_req_buf, "\r\n\r\n");
     const char *body = hdr_end ? hdr_end + 4 : "";
@@ -450,22 +499,48 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     return ERR_OK;
 }
 
+static err_t on_poll(void *arg, struct tcp_pcb *pcb) {
+    (void)arg;
+    if (pcb != s_client_pcb) return ERR_OK;
+
+    if (client_timed_out()) {
+        printf("[wifi_sta_http] client timeout (req_len=%u tx=%u sent=%u/%u)\n",
+               (unsigned)s_req_len,
+               (unsigned)s_tx_active,
+               (unsigned)s_tx_sent,
+               (unsigned)s_tx_len);
+        release_client(pcb, true);
+        return ERR_ABRT;
+    }
+
+    if (s_tx_active) tx_pump(pcb);
+    return ERR_OK;
+}
+
 static err_t on_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
     (void)arg;
     if (err != ERR_OK || !client_pcb) return ERR_VAL;
 
     /* Single client at a time; a second concurrent request is aborted. */
     if (s_client_pcb) {
-        tcp_abort(client_pcb);
-        return ERR_ABRT;
+        if (client_timed_out()) {
+            printf("[wifi_sta_http] replacing stale client\n");
+            release_client(s_client_pcb, true);
+        } else {
+            tcp_abort(client_pcb);
+            return ERR_ABRT;
+        }
     }
 
     s_req_len    = 0;
     s_req_buf[0] = '\0';
+    clear_tx_state();
+    mark_client_progress();
 
     tcp_arg(client_pcb, NULL);
     tcp_err(client_pcb, on_client_err);
     tcp_recv(client_pcb, on_recv);
+    tcp_poll(client_pcb, on_poll, STA_TCP_POLL_INTERVAL);
     s_client_pcb = client_pcb;
     return ERR_OK;
 }
@@ -476,6 +551,8 @@ void wifi_sta_http_start(const char *ssid, const char *ip) {
     s_reboot_pending = false;
     s_client_pcb     = NULL;
     s_req_len        = 0;
+    clear_tx_state();
+    s_client_last_progress_ms = 0;
     memset(&s_auth_throttle, 0, sizeof(s_auth_throttle));
 
     strncpy(s_ssid, ssid ? ssid : "", sizeof(s_ssid) - 1);
@@ -495,7 +572,7 @@ void wifi_sta_http_start(const char *ssid, const char *ip) {
 }
 
 void wifi_sta_http_stop(void) {
-    if (s_client_pcb) { tcp_abort(s_client_pcb); s_client_pcb = NULL; }
+    if (s_client_pcb) release_client(s_client_pcb, true);
     if (s_listen_pcb) { tcp_close(s_listen_pcb); s_listen_pcb = NULL; }
 }
 

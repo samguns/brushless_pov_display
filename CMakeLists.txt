@@ -23,10 +23,10 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-# Pimoroni Pico Plus 2 W: RP2350B (PICO_RP2350A=0) with the RM2 wireless module.
-# This board header sets the correct RM2/CYW43 pins and a 16 MB flash default,
-# unlike the standard pico2_w (RP2350A, on-package CYW43, 4 MB).
-set(PICO_BOARD pimoroni_pico_plus2_w_rp2350 CACHE STRING "Board type")
+# Official Raspberry Pi Pico W by default. To build for the older Pimoroni
+# Pico Plus 2 W target, configure with:
+#   cmake -B build -DPICO_BOARD=pimoroni_pico_plus2_w_rp2350
+set(PICO_BOARD pico_w CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -57,28 +57,27 @@ add_executable(pov_leds
 pico_set_program_name(pov_leds "pov_leds")
 pico_set_program_version(pov_leds "0.1")
 
-# This RP2350B board wires the RM2 (CYW43439) wireless module to non-standard
-# GPIOs (not the 23/24/25/29 used by the Pimoroni Pico Plus 2 W board header).
-# Override the board's #ifndef-guarded CYW43 default pins to match the hardware.
-# DATA_OUT/DATA_IN/HOST_WAKE share one half-duplex SPI data line (GPIO 37).
-# DATA(37)/CLOCK(39) are >= 32, which is fine: PICO_PIO_USE_GPIO_BASE auto-enables
-# on RP2350B (48 GPIOs) so the CYW43 PIO uses GPIO base 16 (covers 16..47).
-target_compile_definitions(pov_leds PRIVATE
-        CYW43_DEFAULT_PIN_WL_REG_ON=36
-        CYW43_DEFAULT_PIN_WL_DATA_OUT=37
-        CYW43_DEFAULT_PIN_WL_DATA_IN=37
-        CYW43_DEFAULT_PIN_WL_HOST_WAKE=37
-        CYW43_DEFAULT_PIN_WL_CLOCK=39
-        CYW43_DEFAULT_PIN_WL_CS=38
-)
+if(PICO_BOARD STREQUAL "pimoroni_pico_plus2_w_rp2350")
+        # This RP2350B board wires the RM2 (CYW43439) wireless module to
+        # non-standard GPIOs. Do not apply these overrides to the official
+        # Pico W: its CYW43 pins are fixed by the SDK's pico_w board header.
+        target_compile_definitions(pov_leds PRIVATE
+                CYW43_DEFAULT_PIN_WL_REG_ON=36
+                CYW43_DEFAULT_PIN_WL_DATA_OUT=37
+                CYW43_DEFAULT_PIN_WL_DATA_IN=37
+                CYW43_DEFAULT_PIN_WL_HOST_WAKE=37
+                CYW43_DEFAULT_PIN_WL_CLOCK=39
+                CYW43_DEFAULT_PIN_WL_CS=38
+        )
 
-# feature 002: reserve the last 4 KB flash sector for WiFi credentials so a UF2
-# firmware update cannot overwrite them, with a build-time ASSERT guard.
-# See specs/002-sta-portal-fw-update/ (research.md RES-001, data-model.md).
-pico_set_linker_script(pov_leds ${CMAKE_CURRENT_LIST_DIR}/memmap_wifi_creds.ld)
+        # feature 002: reserve the last 4 KB flash sector for WiFi credentials
+        # on the Pimoroni RP2350B/16 MB layout, with a build-time ASSERT guard.
+        # The official Pico W uses the SDK's RP2040 linker script instead.
+        pico_set_linker_script(pov_leds ${CMAKE_CURRENT_LIST_DIR}/memmap_wifi_creds.ld)
+endif()
 
 # Generate PIO header
-pico_generate_pio_header(pov_leds ${CMAKE_CURRENT_LIST_DIR}/blink.pio)
+pico_generate_pio_header(pov_leds ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
 
 # Development validation mode: USB stdio enabled for runtime logging.
 # Release builds should set POV_DEMO_DEV_USB_STDIO=OFF.

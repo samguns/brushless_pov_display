@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 /*
- * Flash layout (last 4 KB sector of 2 MB flash):
+ * Flash layout (last 4 KB sector of the board flash):
  *
  * V1 record (legacy, still readable):
  *   magic + ssid + password + flags + crc32
@@ -17,7 +17,7 @@ extern "C" {
  * V2 record (current):
  *   magic + version + ssid + password + admin_token + flags + crc32
  *
- * XIP base address: 0x101FF000 (PICO_FLASH_SIZE_BYTES = 2 MB, sector = 4 KB)
+ * XIP base address: XIP_BASE + PICO_FLASH_SIZE_BYTES - 4 KB
  */
 #define WIFI_FLASH_MAGIC_V1     0xC0FFEE01UL
 #define WIFI_FLASH_MAGIC_V2     0xC0FFEE02UL

@@ -6,11 +6,10 @@
 #include "hardware/dma.h"
 #include "pico/time.h"
 
-#include "blink.pio.h"
+#include "ws2812.pio.h"
 
 namespace {
 constexpr uint32_t kWs2812BitRateHz = 800000;
-constexpr uint32_t kWs2812CyclesPerBit = ws2812_T1 + ws2812_T2 + ws2812_T3;
 
 uint8_t clamp_led_count(int requested_led_count, bool *bounded) {
     if (bounded != nullptr) {
@@ -107,9 +106,8 @@ bool ws2812_driver_init(ws2812_driver_t *driver,
         return false;
     }
 
-    // Timing is derived from runtime clock source to avoid hardcoded clock assumptions.
-    float div = (float)driver->sys_clock_hz / (kWs2812BitRateHz * (float)kWs2812CyclesPerBit);
-    ws2812_program_init(pio, sm, offset, pin, div, rgbw);
+    // The generated ws2812.pio helper derives the clock divider from this bit rate.
+    ws2812_program_init(pio, sm, offset, pin, (float)kWs2812BitRateHz, rgbw);
 
     driver->dma_chan = dma_claim_unused_channel(false);
     if (driver->dma_chan < 0) {
