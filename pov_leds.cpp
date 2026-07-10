@@ -1,26 +1,30 @@
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 
-#include "pico/stdlib.h"
 #include "hardware/pio.h"
+#include "pico/stdlib.h"
 
-#include "ws2812.pio.h"
-#include "pov_demo.h"
-#include "ws2812_driver.h"
 #include "hall_sensor.h"
+#include "pov_clock.h"
+#include "pov_clock_renderer.h"
+#include "time_sync.h"
 #include "wifi_config.h"
+#include "ws2812.pio.h"
+#include "ws2812_driver.h"
 
 #define LOG_DRIVER(fmt, ...) printf("[driver] " fmt "\n", ##__VA_ARGS__)
-#define LOG_DEMO(fmt, ...) printf("[demo] " fmt "\n", ##__VA_ARGS__)
-#define LOG_TIMING(fmt, ...) printf("[timing] " fmt "\n", ##__VA_ARGS__)
+#define LOG_CLOCK(fmt, ...) printf("[clock] " fmt "\n", ##__VA_ARGS__)
 #define LOG_HEALTH(fmt, ...) printf("[health] " fmt "\n", ##__VA_ARGS__)
 #define LOG_HALL(fmt, ...) printf("[hall] " fmt "\n", ##__VA_ARGS__)
+#define LOG_TIME(fmt, ...) printf("[time] " fmt "\n", ##__VA_ARGS__)
 
 namespace {
 constexpr uint8_t kRequestedLedCount = POV_LED_MAX_COUNT;
 constexpr uint kDefaultDataPin = 2;
 constexpr uint32_t kHallLogIntervalMs = 1000;
+constexpr uint32_t kStatusFrameIntervalMs = 500;
+constexpr const char *kTimeServer = "pool.ntp.org";
 }
 
 int main() {
@@ -68,146 +72,162 @@ int main() {
                    (unsigned)ws2812_driver_get_sys_clock_hz(&driver));
     }
 
-    // Apply the persisted display brightness (percent 0..100 -> 0..255).
     uint8_t brightness_pct = wifi_config_get_brightness();
     ws2812_driver_set_brightness(&driver, (uint8_t)((brightness_pct * 255u) / 100u));
-
-    pov_demo_t demo;
-    pov_demo_init(&demo);
 
     hall_sensor_t hall;
     hall_sensor_config_t hall_cfg;
     hall_sensor_init_defaults(&hall_cfg);
     bool hall_ok = hall_sensor_init(&hall, &hall_cfg);
     if (hall_ok) {
-        LOG_HALL("ready pin=%u magnets=%u stop_timeout_ms=%u",
+        LOG_HALL("ready pin=%u magnets=%u stop_timeout_ms=%u nominal=%u rpm range=%u-%u rpm",
                  (unsigned)hall_cfg.pin,
                  (unsigned)hall_cfg.magnets_per_rev,
-                 (unsigned)(hall_cfg.stop_timeout_us / 1000u));
+                 (unsigned)(hall_cfg.stop_timeout_us / 1000u),
+                 (unsigned)POV_CLOCK_NOMINAL_RPM,
+                 (unsigned)POV_CLOCK_MIN_RPM,
+                 (unsigned)POV_CLOCK_MAX_RPM);
     } else {
         LOG_HALL("init failed pin=%u", (unsigned)hall_cfg.pin);
     }
 
+    time_sync_t time_sync;
+    time_sync_init_defaults(&time_sync);
+    uint32_t boot_ms = (uint32_t)to_ms_since_boot(get_absolute_time());
+    time_sync_start(&time_sync, kTimeServer, boot_ms);
+    LOG_TIME("calibration start server=%s", kTimeServer);
+
+    pov_clock_time_t clock_time;
+    pov_clock_time_init(&clock_time);
+
+    pov_clock_rotation_t rotation;
+    pov_clock_rotation_init(&rotation);
+
+    pov_clock_renderer_t renderer;
+    pov_clock_renderer_init(&renderer);
+    pov_clock_renderer_set_text(&renderer, clock_time.text);
+
     static uint32_t frame_words[POV_LED_MAX_COUNT] = {0};
 
-    bool first_h_logged = false;
-    bool driver_unavailable_logged = false;
-    uint32_t readiness_ms = 0;
-    bool frame_dirty = false;
-    uint32_t frame_dirty_since_ms = 0;
-    bool dma_stall_warned = false;
     uint32_t hall_last_log_ms = 0;
-    bool hall_was_spinning = false;
+    uint32_t status_last_ms = 0;
+    bool status_frame_dirty = true;
     uint8_t last_brightness_pct = brightness_pct;
+    time_sync_state_t last_sync_state = time_sync.state;
+    time_sync_error_t last_sync_error = time_sync.last_error;
+    pov_clock_rotation_status_t last_rotation_status = POV_CLOCK_ROTATION_UNAVAILABLE;
+    pov_clock_health_t last_health = POV_CLOCK_HEALTH_TIME_UNAVAILABLE;
+    bool time_loaded = false;
+    bool dma_stall_warned = false;
 
     while (true) {
         wifi_config_runtime_step();
 
-        // Reflect portal brightness changes onto the live LED output.
         uint8_t cur_brightness_pct = wifi_config_get_brightness();
         if (cur_brightness_pct != last_brightness_pct) {
             last_brightness_pct = cur_brightness_pct;
             ws2812_driver_set_brightness(
                 &driver, (uint8_t)((cur_brightness_pct * 255u) / 100u));
-            frame_dirty = true;  // re-submit so new brightness takes effect now
+            status_frame_dirty = true;
         }
 
-        uint32_t now_ms = (uint32_t)to_ms_since_boot(get_absolute_time());
+        absolute_time_t now_abs = get_absolute_time();
+        uint32_t now_ms = (uint32_t)to_ms_since_boot(now_abs);
+        uint64_t now_us = to_us_since_boot(now_abs);
 
-        if (ws2812_driver_is_ready(&driver) && !demo.playback.started) {
-            driver_unavailable_logged = false;
-            readiness_ms = now_ms;
-            pov_demo_start(&demo, now_ms);
-            frame_dirty = true;
-            frame_dirty_since_ms = now_ms;
-            dma_stall_warned = false;
-            LOG_DEMO("start sequence=%c%c%c%c%c duration_ms=%u",
-                     demo.sequence.chars[0],
-                     demo.sequence.chars[1],
-                     demo.sequence.chars[2],
-                     demo.sequence.chars[3],
-                     demo.sequence.chars[4],
-                     (unsigned)demo.sequence.duration_ms);
+        time_sync_step(&time_sync, now_ms);
+        if (time_sync.state != last_sync_state || time_sync.last_error != last_sync_error) {
+            last_sync_state = time_sync.state;
+            last_sync_error = time_sync.last_error;
+            LOG_TIME("state=%s error=%s attempts=%u",
+                     time_sync_state_text(time_sync.state),
+                     time_sync_error_text(time_sync.last_error),
+                     (unsigned)time_sync.attempt_count);
         }
 
-        bool transitioned = false;
-        uint32_t elapsed_ms = 0;
-        if (demo.playback.started) {
-            char from_char = pov_demo_current_char(&demo);
-            if (pov_demo_step(&demo, now_ms, &transitioned, &elapsed_ms) && transitioned) {
-                char to_char = pov_demo_current_char(&demo);
-                LOG_DEMO("transition %c->%c idx=%u ts_ms=%u",
-                         from_char,
-                         to_char,
-                         (unsigned)demo.playback.current_index,
-                         (unsigned)now_ms);
-                LOG_TIMING("cadence_ms=%u target_ms=%u",
-                           (unsigned)elapsed_ms,
-                           (unsigned)demo.sequence.duration_ms);
-                driver.health.transition_log_count++;
-                frame_dirty = true;
-                frame_dirty_since_ms = now_ms;
-                dma_stall_warned = false;
-            }
-
-            // WS2812 latches and holds the last frame, so only push on change.
-            // Submitting every loop iteration would race the in-flight DMA and
-            // flood the health log with benign "dma busy" events.
-            if (frame_dirty) {
-                if (!ws2812_driver_is_dma_busy(&driver)) {
-                    pov_demo_render_frame(&demo,
-                                          frame_words,
-                                          POV_LED_MAX_COUNT,
-                                          driver.strip.active_count);
-                    if (ws2812_driver_submit_frame(&driver, frame_words, driver.strip.active_count)) {
-                        frame_dirty = false;
-                    }
-                } else if (!dma_stall_warned && (now_ms - frame_dirty_since_ms) > 50u) {
-                    dma_stall_warned = true;
-                    LOG_HEALTH("dma busy: frame submit delayed ts_ms=%u", (unsigned)now_ms);
-                }
-            }
-
-            if (!first_h_logged && pov_demo_current_char(&demo) == 'H') {
-                first_h_logged = true;
-                LOG_TIMING("startup_latency_ms=%u", (unsigned)(now_ms - readiness_ms));
-            }
-        } else if (!ws2812_driver_is_ready(&driver) && !driver_unavailable_logged) {
-            driver_unavailable_logged = true;
-            LOG_HEALTH("driver unavailable err=%u keep-loop-responsive", (unsigned)driver.health.last_error_code);
+        if (time_sync_has_time(&time_sync) && !time_loaded) {
+            time_loaded = true;
+            pov_clock_time_set_utc(&clock_time,
+                                   time_sync_get_utc_seconds(&time_sync),
+                                   time_sync_get_calibrated_at_us(&time_sync));
+            pov_clock_renderer_set_text(&renderer, clock_time.text);
+            status_frame_dirty = true;
+            LOG_TIME("calibrated utc=%u cst=%s",
+                     (unsigned)clock_time.current_utc_seconds,
+                     clock_time.text);
         }
 
-        // Non-blocking rotation-speed read every loop iteration; O(1), no waits.
+        bool second_changed = pov_clock_time_update(&clock_time, now_us);
+        if (second_changed) {
+            pov_clock_renderer_set_text(&renderer, clock_time.text);
+            LOG_CLOCK("tick %s", clock_time.text);
+        }
+
         if (hall_ok) {
-            uint64_t now_us = to_us_since_boot(get_absolute_time());
-            hall_rotation_measurement_t rot = hall_sensor_read(&hall, now_us);
-
-            bool spinning = rot.valid && !rot.stale;
-            if (spinning != hall_was_spinning) {
-                hall_was_spinning = spinning;
-                if (spinning) {
-                    LOG_HALL("rotation started rpm=%d hz=%d.%02d edges=%u",
-                             (int)(rot.rpm + 0.5f),
-                             (int)rot.hz,
-                             (int)((rot.hz - (int)rot.hz) * 100.0f),
-                             (unsigned)hall_sensor_get_edge_count(&hall));
-                } else {
-                    LOG_HALL("rotation stopped/stale edges=%u",
-                             (unsigned)hall_sensor_get_edge_count(&hall));
-                }
+            hall_rotation_measurement_t measurement = hall_sensor_read(&hall, now_us);
+            pov_clock_rotation_status_t status = pov_clock_rotation_update(&rotation, &measurement);
+            if (status != last_rotation_status) {
+                last_rotation_status = status;
+                status_frame_dirty = true;
+                LOG_HALL("suitability=%s rpm=%d period_us=%u",
+                         pov_clock_rotation_status_text(status),
+                         (int)(rotation.rpm + 0.5f),
+                         (unsigned)rotation.period_us);
             }
 
-            if (spinning && (now_ms - hall_last_log_ms) >= kHallLogIntervalMs) {
+            if (rotation.fresh && (now_ms - hall_last_log_ms) >= kHallLogIntervalMs) {
                 hall_last_log_ms = now_ms;
-                LOG_HALL("speed rpm=%d hz=%d.%02d period_us=%u",
-                         (int)(rot.rpm + 0.5f),
-                         (int)rot.hz,
-                         (int)((rot.hz - (int)rot.hz) * 100.0f),
-                         (unsigned)rot.period_us);
+                LOG_HALL("speed rpm=%d target=%u range=%u-%u period_us=%u",
+                         (int)(rotation.rpm + 0.5f),
+                         (unsigned)POV_CLOCK_NOMINAL_RPM,
+                         (unsigned)POV_CLOCK_MIN_RPM,
+                         (unsigned)POV_CLOCK_MAX_RPM,
+                         (unsigned)rotation.period_us);
             }
         }
 
-        wifi_config_set_blink_status(ws2812_driver_is_ready(&driver), 1u);
+        pov_clock_health_t health = pov_clock_derive_health(&clock_time, &rotation);
+        if (health != last_health) {
+            last_health = health;
+            status_frame_dirty = true;
+            dma_stall_warned = false;
+            LOG_HEALTH("display=%s", pov_clock_health_text(health));
+        }
+
+        if (ws2812_driver_is_ready(&driver)) {
+            if (health == POV_CLOCK_HEALTH_NORMAL) {
+                if (pov_clock_renderer_step(&renderer, rotation.period_us, now_us)) {
+                    pov_clock_renderer_render_current(&renderer,
+                                                      frame_words,
+                                                      POV_LED_MAX_COUNT,
+                                                      driver.strip.active_count);
+                    if (!ws2812_driver_is_dma_busy(&driver)) {
+                        ws2812_driver_submit_frame(&driver, frame_words, driver.strip.active_count);
+                        dma_stall_warned = false;
+                    } else if (!dma_stall_warned) {
+                        dma_stall_warned = true;
+                        LOG_HEALTH("dma busy: clock column delayed ts_ms=%u", (unsigned)now_ms);
+                    }
+                }
+            } else if (status_frame_dirty || (now_ms - status_last_ms) >= kStatusFrameIntervalMs) {
+                status_last_ms = now_ms;
+                pov_clock_renderer_render_status(health,
+                                                 frame_words,
+                                                 POV_LED_MAX_COUNT,
+                                                 driver.strip.active_count);
+                if (!ws2812_driver_is_dma_busy(&driver)) {
+                    ws2812_driver_submit_frame(&driver, frame_words, driver.strip.active_count);
+                    status_frame_dirty = false;
+                    dma_stall_warned = false;
+                } else if (!dma_stall_warned) {
+                    dma_stall_warned = true;
+                    LOG_HEALTH("dma busy: status frame delayed ts_ms=%u", (unsigned)now_ms);
+                }
+            }
+        }
+
+        wifi_config_set_blink_status(ws2812_driver_is_ready(&driver),
+                                     health == POV_CLOCK_HEALTH_NORMAL ? 10u : 1u);
         tight_loop_contents();
     }
 }

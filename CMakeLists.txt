@@ -43,6 +43,9 @@ add_executable(pov_leds
         ws2812_driver.cpp
         pov_demo.cpp
         hall_sensor.cpp
+        time_sync.cpp
+        pov_clock.cpp
+        pov_clock_renderer.cpp
         dhcpserver.c
         wifi_config/wifi_config.c
         wifi_config/wifi_flash.c
@@ -114,4 +117,3 @@ target_link_libraries(pov_leds
         )
 
 pico_add_extra_outputs(pov_leds)
-
