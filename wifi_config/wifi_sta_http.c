@@ -12,6 +12,7 @@
 #include "wifi_sta_web.h"
 #include "wifi_config.h"
 #include "wifi_scan.h"
+#include "wifi_firmware_update.h"
 
 /* ---- configuration -------------------------------------------------- */
 
@@ -34,6 +35,8 @@ static struct tcp_pcb *s_client_pcb = NULL;
 /* Set by the recv callback after a confirmed POST /update; consumed by poll()
  * which flushes the response and reboots into USB MSD mode (FR-010). */
 static bool s_reboot_pending = false;
+static bool s_ota_upload = false;
+static uint32_t s_ota_restart_at_ms = 0;
 
 /* Connected network info shown on the status page (FR-007) */
 static char s_ssid[33] = {0};
@@ -237,7 +240,6 @@ static void start_send(struct tcp_pcb *pcb, int status_code,
     int hdr_len = snprintf(s_hdr_buf, sizeof(s_hdr_buf),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
-        "Content-Length: %d\r\n"
         "Connection: close\r\n"
         "\r\n",
         status_code, status_text, content_type, body_len);
@@ -321,6 +323,15 @@ static bool request_is_authorized_mutation(const char *req,
     return provided_token[0] && strcmp(provided_token, s_admin_token) == 0;
 }
 
+static void send_ota_status(struct tcp_pcb *pcb, int status, const char *text) {
+    int n = snprintf(s_page_buf, sizeof(s_page_buf),
+        "{\"state\":%u,\"received_bytes\":%u,\"expected_bytes\":%u,\"build_id\":\"%s\",\"message\":\"%s\"}",
+        (unsigned)wifi_fw_update_state(), (unsigned)wifi_fw_update_received(),
+        (unsigned)wifi_fw_update_expected(), wifi_fw_update_build_id(), text ? text : wifi_fw_update_message());
+    if (n < 0) n = 0;
+    send_json_response(pcb, status, status == 200 ? "OK" : "Error", s_page_buf);
+}
+
 /* ---- TCP callbacks -------------------------------------------------- */
 
 static void on_client_err(void *arg, err_t err) {
@@ -333,15 +344,35 @@ static void on_client_err(void *arg, err_t err) {
         printf("[wifi_sta_http] client error %d\n", (int)err);
     }
     clear_client_state(NULL);
+    if (s_ota_upload) { wifi_fw_update_abort("Upload interrupted."); s_ota_upload = false; }
 }
 
 static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
     (void)arg;
     if (!p || err != ERR_OK) {
+        if (s_ota_upload) { wifi_fw_update_abort("Upload interrupted."); s_ota_upload = false; }
         if (p) pbuf_free(p);
         bool abort_client = (err != ERR_OK);
         release_client(pcb, abort_client);
         return abort_client ? ERR_ABRT : ERR_OK;
+    }
+
+    if (s_ota_upload) {
+        static uint8_t chunk[1024];
+        u16_t total = p->tot_len;
+        for (u16_t off = 0; off < total; ) {
+            u16_t n = (total - off > sizeof(chunk)) ? sizeof(chunk) : total - off;
+            pbuf_copy_partial(p, chunk, n, off);
+            if (!wifi_fw_update_write(chunk, n)) { s_ota_upload = false; break; }
+            off += n;
+        }
+        pbuf_free(p); tcp_recved(pcb, total); mark_client_progress();
+        if (wifi_fw_update_received() == wifi_fw_update_expected()) {
+            s_ota_upload = false;
+            if (wifi_fw_update_finish()) { s_ota_restart_at_ms = now_ms() + 1200u; send_ota_status(pcb, 200, wifi_fw_update_message()); }
+            else send_ota_status(pcb, 422, wifi_fw_update_message());
+        }
+        return ERR_OK;
     }
 
     /* Accumulate request across multiple tcp_recv frames */
@@ -350,15 +381,38 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     pbuf_copy_partial(p, s_req_buf + s_req_len, copy_len, 0);
     s_req_len += copy_len;
     s_req_buf[s_req_len] = '\0';
-    pbuf_free(p);
-    tcp_recved(pcb, copy_len);
+    tcp_recved(pcb, p->tot_len);
     mark_client_progress();
 
     const char *hdr_end = strstr(s_req_buf, "\r\n\r\n");
     const char *body = hdr_end ? hdr_end + 4 : "";
     if (!hdr_end && strncmp(s_req_buf, "POST ", 5) == 0) {
+        pbuf_free(p);
         return ERR_OK;
     }
+
+    if (hdr_end && strncmp(s_req_buf, "POST /ota ", 10) == 0) {
+        const char *cl = strstr(s_req_buf, "Content-Length: ");
+        uint32_t size = cl ? (uint32_t)strtoul(cl + 16, NULL, 10) : 0;
+        size_t body_offset = (size_t)(hdr_end + 4 - s_req_buf);
+        if (!wifi_fw_update_begin(size)) { pbuf_free(p); send_ota_status(pcb, 409, wifi_fw_update_message()); return ERR_OK; }
+        s_ota_upload = true;
+        if (p->tot_len > body_offset) {
+            static uint8_t chunk[1024];
+            u16_t total = p->tot_len;
+            for (u16_t off = (u16_t)body_offset; off < total; ) { u16_t n = total-off > sizeof(chunk) ? sizeof(chunk) : total-off; pbuf_copy_partial(p, chunk, n, off); if (!wifi_fw_update_write(chunk,n)) { s_ota_upload=false; break; } off += n; }
+        }
+        pbuf_free(p);
+        if (!s_ota_upload) send_ota_status(pcb, 422, wifi_fw_update_message());
+        else if (wifi_fw_update_received() == wifi_fw_update_expected()) {
+            s_ota_upload = false;
+            if (wifi_fw_update_finish()) { s_ota_restart_at_ms = now_ms() + 1200u; send_ota_status(pcb, 200, wifi_fw_update_message()); }
+            else send_ota_status(pcb, 422, wifi_fw_update_message());
+        }
+        return ERR_OK;
+    }
+
+    pbuf_free(p);
 
     if (strncmp(s_req_buf, "POST ", 5) == 0) {
         int content_len = 0;
@@ -372,7 +426,12 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         }
     }
 
-    if (strncmp(s_req_buf, "GET /status", 11) == 0) {
+    if (strncmp(s_req_buf, "GET /ota/status", 15) == 0) {
+        send_ota_status(pcb, 200, wifi_fw_update_message()); s_req_len = 0;
+    } else if (strncmp(s_req_buf, "GET /ota", 8) == 0) {
+        int page_len = wifi_sta_web_build_ota_page(s_page_buf, sizeof(s_page_buf));
+        send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0); s_req_len = 0;
+    } else if (strncmp(s_req_buf, "GET /status", 11) == 0) {
         int json_len = wifi_sta_web_build_status_json(
             s_page_buf, sizeof(s_page_buf), s_ip, s_connectivity_state,
             s_blink_active, s_blink_hz);
@@ -549,6 +608,7 @@ static err_t on_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
 
 void wifi_sta_http_start(const char *ssid, const char *ip) {
     s_reboot_pending = false;
+    s_ota_restart_at_ms = 0;
     s_client_pcb     = NULL;
     s_req_len        = 0;
     clear_tx_state();
@@ -582,6 +642,15 @@ void wifi_sta_http_poll(void) {
      * (Pages can exceed TCP_SND_BUF; see start_send/tx_pump.) */
     if (s_tx_active && s_client_pcb) {
         tx_pump(s_client_pcb);
+    }
+
+    /* OTA restart is driven by the firmware super-loop, not a client callback:
+     * the status response normally closes its TCP PCB before the grace period
+     * expires. Wait for that response to finish before handing control to the
+     * FOTA bootloader. */
+    if (s_ota_restart_at_ms && now_ms() >= s_ota_restart_at_ms && !s_tx_active) {
+        s_ota_restart_at_ms = 0;
+        wifi_fw_update_perform();
     }
 
     if (!s_reboot_pending) return;

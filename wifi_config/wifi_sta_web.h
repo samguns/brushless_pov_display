@@ -84,6 +84,8 @@ int wifi_sta_web_build_update_page(char *buf, size_t buflen);
  */
 int wifi_sta_web_build_rebooting_page(char *buf, size_t buflen);
 
+int wifi_sta_web_build_ota_page(char *buf, size_t buflen);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,6 +10,7 @@
 #include "pov_clock_renderer.h"
 #include "time_sync.h"
 #include "wifi_config.h"
+#include "wifi_firmware_update.h"
 #include "ws2812.pio.h"
 #include "ws2812_driver.h"
 
@@ -24,7 +25,7 @@ constexpr uint8_t kRequestedLedCount = POV_LED_MAX_COUNT;
 constexpr uint kDefaultDataPin = 2;
 constexpr uint32_t kHallLogIntervalMs = 1000;
 constexpr uint32_t kStatusFrameIntervalMs = 500;
-constexpr const char *kTimeServer = "pool.ntp.org";
+constexpr const char *kTimeServer = "ntp.tencent.com";
 }
 
 int main() {
@@ -119,6 +120,9 @@ int main() {
     pov_clock_health_t last_health = POV_CLOCK_HEALTH_TIME_UNAVAILABLE;
     bool time_loaded = false;
     bool dma_stall_warned = false;
+
+    // Commit a candidate image only after normal WiFi/display initialization.
+    wifi_fw_update_boot_status();
 
     while (true) {
         wifi_config_runtime_step();

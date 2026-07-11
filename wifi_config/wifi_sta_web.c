@@ -323,7 +323,9 @@ int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
         "<div class=\"row\"><div class=\"lbl\">Firmware Version</div>"
         "<div class=\"val\">%s</div></div>"
         "<div class=\"row\"><a class=\"btn danger\" href=\"/update\">"
-        "Update Firmware</a></div>"
+        "Update Firmware (USB)</a></div>"
+        "<div class=\"row\"><a class=\"btn primary\" href=\"/ota\">"
+        "Update Firmware (OTA)</a></div>"
         "</div>",
         WIFI_STA_FW_VERSION);
 
@@ -455,6 +457,26 @@ int wifi_sta_web_build_rebooting_page(char *buf, size_t buflen) {
         "<p>Your saved Wi-Fi network will be remembered after the update.</p>"
         "</div></div></body></html>");
     return (int)off;
+}
+
+int wifi_sta_web_build_ota_page(char *buf, size_t buflen) {
+    int r = shell_open(buf, buflen, 0, "WiFi OTA", "settings");
+    if (r < 0) return -1;
+    size_t off = (size_t)r;
+    STA_APPEND("<div><h1>Update Firmware (WIFI)</h1><p class=\"sub\">Secure local update · compatible .povota package</p></div>"
+        "<div class=\"warn\"><p><strong>Restart required.</strong> A validated update briefly pauses display and network availability.</p>"
+        "<p>Need recovery or first-time migration? Use <a href=\"/update\">Update Firmware (USB)</a>.</p></div>"
+        "<div class=\"card\" style=\"max-width:620px;padding:24px\"><div class=\"k\">Firmware package</div>"
+        "<input id=\"f\" class=\"field\" type=\"file\" accept=\".povota\" style=\"margin:12px 0\">"
+        "<div style=\"display:flex;justify-content:space-between;align-items:center;margin:16px 0 7px\"><span id=\"stage\" class=\"lbl\">Ready to upload</span><b id=\"pct\" class=\"val\">0%</b></div>"
+        "<div style=\"height:10px;background:var(--inset);border-radius:99px;overflow:hidden;border:1px solid var(--border)\"><div id=\"bar\" style=\"height:100%;width:0%;background:var(--accent);transition:width .25s ease\"></div></div>"
+        "<p id=\"s\" class=\"desc\" style=\"min-height:20px;margin:10px 0 18px\">Choose a package to begin.</p>"
+        "<button id=\"u\" class=\"btn danger\" type=\"button\" onclick=\"ota()\">Start WiFi update</button></div>"
+        "<script>function show(x){var e=+x.expected_bytes||0,r=+x.received_bytes||0,p=e?Math.min(100,Math.round(r*100/e)):0;bar.style.width=p+'%';pct.textContent=p+'%';stage.textContent=x.state==='ready'?'Restarting':x.state==='validating'?'Validating package':p?'Uploading firmware':'Ready to upload';s.textContent=x.message+(e?' · '+r+' / '+e+' bytes':'');if(x.state==='ready'||x.state==='failed')u.disabled=x.state==='ready';}"
+        "function st(){fetch('/ota/status').then(r=>r.json()).then(show).catch(()=>{});}"
+        "function ota(){var x=f.files[0];if(!x){s.textContent='Choose a .povota package.';return;}u.disabled=true;stage.textContent='Uploading firmware';s.textContent='Preparing upload…';var q=new XMLHttpRequest();q.open('POST','/ota');q.setRequestHeader('Content-Type','application/octet-stream');q.upload.onprogress=function(e){if(e.lengthComputable){var p=Math.round(e.loaded*100/e.total);bar.style.width=p+'%';pct.textContent=p+'%';s.textContent='Uploading firmware · '+e.loaded+' / '+e.total+' bytes';}};q.onload=function(){try{show(JSON.parse(q.responseText));}catch(e){s.textContent='Upload failed. USB recovery remains available.';u.disabled=false;}st();};q.onerror=function(){s.textContent='Upload interrupted. USB recovery remains available.';u.disabled=false;};q.send(x);}setInterval(st,2000);st();</script>");
+    r = shell_close(buf, buflen, off);
+    return r < 0 ? -1 : r;
 }
 
 /* ----- status JSON (unchanged) ------------------------------------- */

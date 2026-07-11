@@ -36,6 +36,16 @@ project(pov_leds C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# WiFi OTA uses the FOTA bootloader's dual-slot, SHA-256, and rollback layout.
+# Keep the final 4 KB flash sector available for existing WiFi settings.
+set(PFB_WITH_IMAGE_ENCRYPTION OFF CACHE BOOL "Disable insecure default FOTA AES key")
+set(PFB_WITH_SHA256_HASHING ON CACHE BOOL "Validate FOTA images with SHA-256")
+set(PFB_WITH_BOOTLOADER_LOGS OFF CACHE BOOL "Keep release bootloader stdio disabled")
+# The FOTA linker splits free flash evenly into 4 KB erase-aligned slots; an
+# 8 KB tail is required. wifi_flash continues to use its compatible final 4 KB.
+set(PFB_RESERVED_FILESYSTEM_SIZE_KB 8 CACHE STRING "Reserve OTA tail and existing settings sector")
+add_subdirectory(deps/pico_fota_bootloader)
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(pov_leds
@@ -55,6 +65,7 @@ add_executable(pov_leds
         wifi_config/wifi_dns.c
         wifi_config/wifi_sta_web.c
         wifi_config/wifi_sta_http.c
+        wifi_config/wifi_firmware_update.c
 )
 
 pico_set_program_name(pov_leds "pov_leds")
@@ -114,6 +125,22 @@ target_link_libraries(pov_leds
         hardware_irq
         hardware_sync
         pico_cyw43_arch_lwip_poll
+        pico_fota_bootloader_lib
         )
+
+target_compile_definitions(pov_leds PRIVATE
+        POV_FIRMWARE_BOARD_ID="pico_w_rp2040"
+        POV_FIRMWARE_BUILD_ID="0.2.0-ota"
+)
+
+pfb_compile_with_bootloader(pov_leds)
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_custom_command(TARGET pov_leds POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/package_firmware.py
+                --input $<TARGET_FILE_DIR:pov_leds>/pov_leds_fota_image.bin
+                --output $<TARGET_FILE_DIR:pov_leds>/pov_leds.povota
+                --board pico_w_rp2040 --build-id 0.2.0-ota
+        COMMENT "Packaging board-validated WiFi update image")
 
 pico_add_extra_outputs(pov_leds)
