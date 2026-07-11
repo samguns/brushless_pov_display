@@ -22,12 +22,12 @@ Defines observable behavior and module boundaries for the STA-mode POV clock.
 ## Rotation Contract
 
 - Nominal target: 600 RPM.
-- Initial suitable range: 480 RPM through 720 RPM inclusive.
+- Initial suitable range: 480 RPM through 800 RPM inclusive.
 - Source: existing Hall-sensor measurement.
 - Unsuitable conditions:
   - stale or invalid Hall measurement,
   - speed below 480 RPM,
-  - speed above 720 RPM,
+  - speed above 800 RPM,
   - excessive instability detected by the implementation.
 
 ## Display Contract
@@ -36,7 +36,7 @@ Defines observable behavior and module boundaries for the STA-mode POV clock.
 - Time format: 24-hour China Standard Time (UTC+8, no DST).
 - Update cadence: displayed seconds change once per wall-clock second.
 - Rendering surface: 57 LEDs in one radial row.
-- Angular layout: fixed 48-column compact clock layout.
+- Angular layout: fixed 40-column compact clock layout.
 - Output transport: existing DMA -> TX FIFO -> PIO WS2812 driver.
 - Invalid states: show a bounded non-clock status pattern or blank output; never
   show a stale normal clock value.

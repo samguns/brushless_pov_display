@@ -9,8 +9,6 @@
 #include "ws2812.pio.h"
 
 namespace {
-constexpr uint32_t kWs2812BitRateHz = 800000;
-
 uint8_t clamp_led_count(int requested_led_count, bool *bounded) {
     if (bounded != nullptr) {
         *bounded = false;
@@ -51,7 +49,7 @@ void ws2812_driver_init_defaults(ws2812_driver_t *driver) {
     memset(driver, 0, sizeof(*driver));
     driver->dma_chan = -1;
     driver->strip.max_count = POV_LED_MAX_COUNT;
-    driver->ws2812_bit_hz = kWs2812BitRateHz;
+    driver->ws2812_bit_hz = WS2812_BIT_RATE_HZ;
     driver->brightness = 255;  /* full intensity by default (no scaling) */
 }
 
@@ -107,7 +105,8 @@ bool ws2812_driver_init(ws2812_driver_t *driver,
     }
 
     // The generated ws2812.pio helper derives the clock divider from this bit rate.
-    ws2812_program_init(pio, sm, offset, pin, (float)kWs2812BitRateHz, rgbw);
+    ws2812_program_init(pio, sm, offset, pin,
+                        (float)WS2812_BIT_RATE_HZ, rgbw);
 
     driver->dma_chan = dma_claim_unused_channel(false);
     if (driver->dma_chan < 0) {
@@ -152,7 +151,22 @@ bool ws2812_driver_is_dma_busy(const ws2812_driver_t *driver) {
         return false;
     }
 
-    return dma_channel_is_busy((uint)driver->dma_chan);
+    if (dma_channel_is_busy((uint)driver->dma_chan)) {
+        return true;
+    }
+    return driver->transfer_ready_us != 0u &&
+           time_us_64() < driver->transfer_ready_us;
+}
+
+uint32_t ws2812_driver_get_frame_duration_us(const ws2812_driver_t *driver,
+                                             size_t frame_words) {
+    if (driver == nullptr) {
+        return 0u;
+    }
+    if (frame_words > driver->strip.active_count) {
+        frame_words = driver->strip.active_count;
+    }
+    return ws2812_frame_duration_us(frame_words, driver->rgbw);
 }
 
 bool ws2812_driver_submit_frame(ws2812_driver_t *driver,
@@ -200,6 +214,8 @@ bool ws2812_driver_submit_frame(ws2812_driver_t *driver,
 
     dma_channel_set_read_addr((uint)driver->dma_chan, src, false);
     dma_channel_set_trans_count((uint)driver->dma_chan, frame_words, true);
+    driver->transfer_ready_us =
+        time_us_64() + ws2812_frame_duration_us(frame_words, driver->rgbw);
 
     return true;
 }

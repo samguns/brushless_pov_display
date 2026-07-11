@@ -44,6 +44,10 @@ static char s_ip[16]   = {0};
 static char s_connectivity_state[20] = "connected";
 static bool s_blink_active = false;
 static uint32_t s_blink_hz = 0;
+static bool s_rotation_speed_available = false;
+static uint32_t s_rotation_speed_rpm = 0;
+static bool s_clock_available = false;
+static char s_clock_text[WIFI_RUNTIME_CLOCK_TEXT_BUF_LEN] = {0};
 
 /* Shared mutating-endpoint token. Empty token means mutating endpoints are disabled. */
 static char s_admin_token[WIFI_ADMIN_TOKEN_MAX_LEN + 1] = {0};
@@ -546,6 +550,8 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         int page_len = wifi_sta_web_build_status_page(
             s_page_buf, sizeof(s_page_buf), s_ssid, s_ip,
             s_connectivity_state, s_blink_active, s_blink_hz,
+            s_clock_available, s_clock_text,
+            s_rotation_speed_available, s_rotation_speed_rpm,
             s_reconfig_notice[0] ? s_reconfig_notice : NULL);
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
@@ -678,7 +684,11 @@ void wifi_sta_http_poll(void) {
 void wifi_sta_http_set_runtime_status(const char *connectivity_state,
                                       const char *ip,
                                       bool blink_active,
-                                      uint32_t blink_hz) {
+                                      uint32_t blink_hz,
+                                      bool clock_available,
+                                      const char *clock_text,
+                                      bool rotation_speed_available,
+                                      uint32_t rotation_speed_rpm) {
     strncpy(s_connectivity_state, connectivity_state ? connectivity_state : "unknown",
             sizeof(s_connectivity_state) - 1);
     s_connectivity_state[sizeof(s_connectivity_state) - 1] = '\0';
@@ -688,6 +698,15 @@ void wifi_sta_http_set_runtime_status(const char *connectivity_state,
 
     s_blink_active = blink_active;
     s_blink_hz = blink_hz;
+    s_clock_available = clock_available && clock_text && clock_text[0];
+    if (s_clock_available) {
+        strncpy(s_clock_text, clock_text, sizeof(s_clock_text) - 1u);
+        s_clock_text[sizeof(s_clock_text) - 1u] = '\0';
+    } else {
+        s_clock_text[0] = '\0';
+    }
+    s_rotation_speed_available = rotation_speed_available;
+    s_rotation_speed_rpm = rotation_speed_available ? rotation_speed_rpm : 0u;
 }
 
 void wifi_sta_http_set_admin_token(const char *token) {

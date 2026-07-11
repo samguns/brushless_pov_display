@@ -14,7 +14,9 @@ extern "C" {
 typedef struct {
     uint8_t active_column;
     uint32_t column_interval_us;
-    uint64_t last_column_us;
+    uint32_t rotation_period_us;
+    uint64_t phase_reference_us;
+    bool phase_locked;
     char text[POV_CLOCK_TEXT_BUF_LEN];
     uint8_t column_masks[POV_CLOCK_COLUMNS];
     uint32_t column_colors[POV_CLOCK_COLUMNS];
@@ -24,7 +26,8 @@ typedef struct {
 void pov_clock_renderer_init(pov_clock_renderer_t *renderer);
 void pov_clock_renderer_set_text(pov_clock_renderer_t *renderer, const char *text);
 bool pov_clock_renderer_step(pov_clock_renderer_t *renderer, uint32_t rotation_period_us,
-                             uint64_t now_us);
+                             uint64_t phase_reference_us,
+                             uint64_t presentation_us);
 void pov_clock_renderer_render_current(const pov_clock_renderer_t *renderer,
                                        uint32_t *frame_words,
                                        size_t frame_len,

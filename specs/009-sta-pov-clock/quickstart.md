@@ -40,9 +40,9 @@ and the reported CST time is within +/-1 second of the reference.
 
 1. Spin the PCB at the nominal 600 RPM target.
 2. Observe Hall-sensor speed output.
-3. Slowly vary speed below 480 RPM and above 720 RPM.
+3. Slowly vary speed below 480 RPM and above 800 RPM.
 
-Expected outcome: 600 RPM is reported as suitable, 480-720 RPM remains suitable,
+Expected outcome: 600 RPM is reported as suitable, 480-800 RPM remains suitable,
 and speeds outside the range transition to a non-clock status state.
 
 ## Scenario 3: POV Clock Display

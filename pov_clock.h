@@ -13,8 +13,8 @@ extern "C" {
 enum {
     POV_CLOCK_NOMINAL_RPM = 600,
     POV_CLOCK_MIN_RPM = 480,
-    POV_CLOCK_MAX_RPM = 720,
-    POV_CLOCK_COLUMNS = 48,
+    POV_CLOCK_MAX_RPM = 800,
+    POV_CLOCK_COLUMNS = 40,
     POV_CLOCK_LED_ROWS = 57,
     POV_CLOCK_CST_OFFSET_SECONDS = 8 * 60 * 60,
     POV_CLOCK_TEXT_LEN = 8,
@@ -52,6 +52,8 @@ typedef struct {
 typedef struct {
     float rpm;
     uint32_t period_us;
+    uint64_t phase_reference_us;
+    uint32_t sample_generation;
     bool fresh;
     bool within_range;
     bool stable;

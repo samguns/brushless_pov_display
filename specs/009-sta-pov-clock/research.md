@@ -1,20 +1,20 @@
 # Research: STA POV Clock Display
 
-## Decision: Recommend 600 RPM nominal speed, 480-720 RPM initial range
+## Decision: Recommend 600 RPM nominal speed, 480-800 RPM initial range
 
 **Rationale**: A 57-pixel WS2812 frame takes about 1.7 ms on the wire before
 allowing for latch and scheduling overhead. A readable compact clock needs around
-48 angular columns per revolution. At 600 RPM (10 revolutions per second), a
-revolution lasts 100 ms and each 48-column slot is about 2.08 ms, leaving a small
+40 angular columns per revolution. At 600 RPM (10 revolutions per second), a
+revolution lasts 100 ms and each 40-column slot is 2.50 ms, leaving a small
 but practical margin for DMA submission and cooperative loop work. Faster targets
-such as 1200 RPM reduce the slot to about 1.04 ms for 48 columns, which is below
+such as 1200 RPM reduce the slot to about 1.25 ms for 40 columns, which is below
 the physical WS2812 transfer time for 57 LEDs.
 
 **Alternatives considered**:
 
 - 1200 RPM: higher refresh but insufficient column budget for `HH:MM:SS CST`
   using a 57-LED WS2812 chain.
-- 900 RPM: still tight for 48 columns (~1.39 ms per column).
+- 900 RPM: still below the wire-time budget for 40 columns (~1.67 ms per column).
 - 300 RPM: ample timing margin but only 5 revolutions per second, likely more
   flicker than necessary.
 
@@ -50,9 +50,9 @@ with no daylight-saving rules.
 - RTC persistence across reboot: useful later, but no persistent RTC requirement
   exists in this feature.
 
-## Decision: Render a compact 48-column built-in clock layout
+## Decision: Render a compact 40-column built-in clock layout
 
-**Rationale**: A fixed 48-column polar frame can fit `HH:MM:SS CST` using compact
+**Rationale**: A fixed 40-column polar frame can fit `HH:MM:SS CST` using compact
 3x5 glyphs plus spacing. Each column maps to one 57-LED radial frame. The
 renderer can scale the 5-row font into a central vertical band and leave the rest
 dark, keeping the framebuffer small and deterministic.

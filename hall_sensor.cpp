@@ -113,6 +113,7 @@ void hall_sensor_deinit(hall_sensor_t *sensor) {
 hall_rotation_measurement_t hall_sensor_derive(uint32_t last_interval_us,
                                                uint64_t last_edge_us,
                                                bool has_two_edges,
+                                               uint32_t edge_count,
                                                const hall_sensor_config_t *config,
                                                uint64_t now_us) {
     hall_rotation_measurement_t m;
@@ -122,6 +123,8 @@ hall_rotation_measurement_t hall_sensor_derive(uint32_t last_interval_us,
     m.valid = false;
     m.stale = false;
     m.last_update_us = now_us;
+    m.reference_edge_us = last_edge_us;
+    m.sample_generation = edge_count;
 
     uint8_t magnets = (config != nullptr && config->magnets_per_rev >= 1u)
                           ? config->magnets_per_rev
@@ -173,6 +176,8 @@ hall_rotation_measurement_t hall_sensor_read(hall_sensor_t *sensor, uint64_t now
     empty.valid = false;
     empty.stale = true;
     empty.last_update_us = now_us;
+    empty.reference_edge_us = 0u;
+    empty.sample_generation = 0u;
 
     if (sensor == nullptr || !sensor->initialized) {
         return empty;
@@ -183,9 +188,11 @@ hall_rotation_measurement_t hall_sensor_read(hall_sensor_t *sensor, uint64_t now
     uint32_t interval = sensor->capture.last_interval_us;
     uint64_t last_edge = sensor->capture.last_edge_us;
     bool two = sensor->capture.has_two_edges;
+    uint32_t edge_count = sensor->capture.edge_count;
     restore_interrupts(save);
 
-    return hall_sensor_derive(interval, last_edge, two, &sensor->config, now_us);
+    return hall_sensor_derive(interval, last_edge, two, edge_count,
+                              &sensor->config, now_us);
 }
 
 float hall_sensor_get_rpm(hall_sensor_t *sensor, uint64_t now_us) {

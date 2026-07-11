@@ -8,7 +8,9 @@ constexpr uint8_t kGlyphWidth = 3;
 constexpr uint8_t kColonWidth = 1;
 constexpr uint8_t kGlyphScaleY = 6;
 constexpr uint8_t kTextTop = (POV_CLOCK_LED_ROWS - (kFontRows * kGlyphScaleY)) / 2;
-constexpr uint8_t kLayoutStartColumn = 10;
+constexpr uint8_t kRenderedTextColumns = 28;
+constexpr uint8_t kLayoutStartColumn =
+    (POV_CLOCK_COLUMNS - kRenderedTextColumns) / 2;
 
 uint32_t grb(uint8_t g, uint8_t r, uint8_t b) {
     return ((uint32_t)g << 16) | ((uint32_t)r << 8) | b;
@@ -67,7 +69,7 @@ void build_columns(pov_clock_renderer_t *renderer) {
     memset(renderer->column_masks, 0, sizeof(renderer->column_masks));
     memset(renderer->column_colors, 0, sizeof(renderer->column_colors));
 
-    uint8_t cursor = kLayoutStartColumn;  // center the 28-column HH:MM:SS string in 48 columns
+    uint8_t cursor = kLayoutStartColumn;
     for (uint8_t i = 0; i < POV_CLOCK_TEXT_LEN && renderer->text[i] != '\0'; ++i) {
         uint8_t width = 0;
         const uint8_t *glyph = glyph_for(renderer->text[i], &width);
@@ -108,8 +110,13 @@ void pov_clock_renderer_set_text(pov_clock_renderer_t *renderer, const char *tex
 }
 
 bool pov_clock_renderer_step(pov_clock_renderer_t *renderer, uint32_t rotation_period_us,
-                             uint64_t now_us) {
-    if (renderer == nullptr || rotation_period_us == 0u) {
+                             uint64_t phase_reference_us,
+                             uint64_t presentation_us) {
+    if (renderer == nullptr || rotation_period_us == 0u ||
+        phase_reference_us == 0u || presentation_us < phase_reference_us) {
+        if (renderer != nullptr) {
+            renderer->phase_locked = false;
+        }
         return false;
     }
 
@@ -119,13 +126,21 @@ bool pov_clock_renderer_step(pov_clock_renderer_t *renderer, uint32_t rotation_p
     }
     renderer->column_interval_us = interval;
 
-    if (renderer->last_column_us == 0u || (now_us - renderer->last_column_us) >= interval) {
-        renderer->last_column_us = now_us;
-        renderer->active_column = (uint8_t)((renderer->active_column + 1u) % POV_CLOCK_COLUMNS);
-        return true;
-    }
+    uint64_t elapsed_us = presentation_us - phase_reference_us;
+    uint32_t phase_us = (uint32_t)(elapsed_us % rotation_period_us);
+    uint8_t target_column = (uint8_t)(
+        ((uint64_t)phase_us * POV_CLOCK_COLUMNS) / rotation_period_us);
 
-    return false;
+    bool schedule_changed = !renderer->phase_locked ||
+                            renderer->phase_reference_us != phase_reference_us ||
+                            renderer->rotation_period_us != rotation_period_us;
+    bool column_changed = target_column != renderer->active_column;
+
+    renderer->phase_reference_us = phase_reference_us;
+    renderer->rotation_period_us = rotation_period_us;
+    renderer->active_column = target_column;
+    renderer->phase_locked = true;
+    return schedule_changed || column_changed;
 }
 
 void pov_clock_renderer_clear(uint32_t *frame_words, size_t frame_len) {

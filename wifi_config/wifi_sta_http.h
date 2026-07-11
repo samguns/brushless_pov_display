@@ -48,9 +48,13 @@ void wifi_sta_http_poll(void);
 
 /* Runtime status updates for GET / and GET /status payloads. */
 void wifi_sta_http_set_runtime_status(const char *connectivity_state,
-									  const char *ip,
-									  bool blink_active,
-									  uint32_t blink_hz);
+                                      const char *ip,
+                                      bool blink_active,
+                                      uint32_t blink_hz,
+                                      bool clock_available,
+                                      const char *clock_text,
+                                      bool rotation_speed_available,
+                                      uint32_t rotation_speed_rpm);
 
 /* Configure/update the shared admin token used for mutating endpoints. */
 void wifi_sta_http_set_admin_token(const char *token);

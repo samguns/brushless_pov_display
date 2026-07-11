@@ -215,6 +215,10 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
                                    const char *connectivity_state,
                                    bool blink_active,
                                    uint32_t blink_hz,
+                                   bool clock_available,
+                                   const char *clock_text,
+                                   bool rotation_speed_available,
+                                   uint32_t rotation_speed_rpm,
                                    const char *notice) {
     int r = shell_open(buf, buflen, 0, "POV Display", "overview");
     if (r < 0) return -1;
@@ -241,6 +245,11 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
         "<div class=\"v\">%s</div></div>",
         (ip && ip[0]) ? ip : "0.0.0.0");
     STA_APPEND(
+        "<div class=\"metric\"><div class=\"k\">Current Clock</div>"
+        "<div class=\"v\">%s CST</div></div>",
+        (clock_available && clock_text && clock_text[0])
+            ? clock_text : "--:--:--");
+    STA_APPEND(
         "<div class=\"metric\"><div class=\"k\">Blink</div>"
         "<div class=\"v\">%s</div></div>",
         blink_active ? "Active" : "Idle");
@@ -248,6 +257,16 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
         "<div class=\"metric\"><div class=\"k\">Blink Frequency</div>"
         "<div class=\"v\">%u Hz</div></div>",
         (unsigned)blink_hz);
+    if (rotation_speed_available) {
+        STA_APPEND(
+            "<div class=\"metric\"><div class=\"k\">Rotation Speed</div>"
+            "<div class=\"v\">%u RPM</div></div>",
+            (unsigned)rotation_speed_rpm);
+    } else {
+        STA_APPEND(
+            "<div class=\"metric\"><div class=\"k\">Rotation Speed</div>"
+            "<div class=\"v\">-- RPM</div></div>");
+    }
     STA_APPEND("</div>");
 
     r = shell_close(buf, buflen, off);

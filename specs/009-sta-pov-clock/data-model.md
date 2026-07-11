@@ -73,7 +73,7 @@ Represents whether measured rotation can support POV clock rendering.
 - `rpm`: latest measured revolutions per minute.
 - `period_us`: latest measured revolution period.
 - `fresh`: true when the Hall reading is valid and not stale.
-- `within_range`: true from 480 RPM through 720 RPM inclusive.
+- `within_range`: true from 480 RPM through 800 RPM inclusive.
 - `stable`: true when recent period variation stays within the accepted jitter
   threshold selected during implementation.
 - `status`: unavailable, too_slow, suitable, too_fast, unstable.
@@ -91,7 +91,7 @@ Represents whether measured rotation can support POV clock rendering.
 
 ## POV Clock Renderer State
 
-Represents the compact 48-column clock layout and current column scheduling.
+Represents the compact 40-column clock layout and current column scheduling.
 
 **Fields**:
 

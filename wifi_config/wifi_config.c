@@ -39,6 +39,12 @@ typedef struct {
     bool blink_active;
     uint32_t blink_frequency_hz;
 
+    bool rotation_speed_available;
+    uint32_t rotation_speed_rpm;
+
+    bool clock_available;
+    char clock_text[WIFI_RUNTIME_CLOCK_TEXT_BUF_LEN];
+
     uint8_t brightness;   /* display brightness percent, 0..100 (feature 007) */
 } wifi_runtime_state_t;
 
@@ -211,7 +217,11 @@ void wifi_config_runtime_step(void) {
         wifi_sta_http_set_runtime_status(state_text(s_runtime.connectivity_state),
                                          s_runtime.active_ip,
                                          s_runtime.blink_active,
-                                         s_runtime.blink_frequency_hz);
+                                         s_runtime.blink_frequency_hz,
+                                         s_runtime.clock_available,
+                                         s_runtime.clock_text,
+                                         s_runtime.rotation_speed_available,
+                                         s_runtime.rotation_speed_rpm);
         wifi_sta_http_poll();
 
         /* Deferred Wi-Fi reconfiguration (feature 006): flush the "applying"
@@ -419,6 +429,22 @@ bool wifi_config_get_blink_active(void) {
 
 uint32_t wifi_config_get_blink_frequency_hz(void) {
     return s_runtime.blink_frequency_hz;
+}
+
+void wifi_config_set_rotation_speed_status(bool available, uint32_t rpm) {
+    s_runtime.rotation_speed_available = available;
+    s_runtime.rotation_speed_rpm = available ? rpm : 0u;
+}
+
+void wifi_config_set_clock_status(bool available, const char *clock_text) {
+    s_runtime.clock_available = available && clock_text && clock_text[0];
+    if (!s_runtime.clock_available) {
+        s_runtime.clock_text[0] = '\0';
+        return;
+    }
+    strncpy(s_runtime.clock_text, clock_text,
+            sizeof(s_runtime.clock_text) - 1u);
+    s_runtime.clock_text[sizeof(s_runtime.clock_text) - 1u] = '\0';
 }
 
 uint8_t wifi_config_get_brightness(void) {

@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "hardware/pio.h"
+#include "ws2812_timing.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +49,7 @@ typedef struct {
     bool rgbw;
     uint32_t sys_clock_hz;
     uint32_t ws2812_bit_hz;
+    uint64_t transfer_ready_us;
 
     led_strip_config_t strip;
     output_health_state_t health;
@@ -80,6 +82,9 @@ bool ws2812_driver_submit_frame(ws2812_driver_t *driver,
                                 size_t frame_words);
 
 bool ws2812_driver_is_dma_busy(const ws2812_driver_t *driver);
+
+uint32_t ws2812_driver_get_frame_duration_us(const ws2812_driver_t *driver,
+                                             size_t frame_words);
 
 bool ws2812_driver_is_ready(const ws2812_driver_t *driver);
 

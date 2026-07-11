@@ -14,6 +14,7 @@ extern "C" {
 #define WIFI_PASS_MAX_LEN   63
 /* Shared admin token length (63 chars + NUL) */
 #define WIFI_ADMIN_TOKEN_MAX_LEN 63
+#define WIFI_RUNTIME_CLOCK_TEXT_BUF_LEN 9
 
 /* WiFi credential pair.  Stored in flash; exchanged between modules. */
 typedef struct {
@@ -85,6 +86,16 @@ const char *wifi_config_get_active_ip(void);
 void wifi_config_set_blink_status(bool active, uint32_t frequency_hz);
 bool wifi_config_get_blink_active(void);
 uint32_t wifi_config_get_blink_frequency_hz(void);
+
+/* Latest operator-facing Hall rotation status for the STA Overview page.
+ * available becomes true after the first valid measurement; rpm is rounded
+ * to a whole number and is zero when previously measured rotation has stopped. */
+void wifi_config_set_rotation_speed_status(bool available, uint32_t rpm);
+
+/* Latest device-local clock status for the STA Overview page. The bounded text
+ * is canonical HH:MM:SS from pov_clock; unavailable state is kept separately
+ * so midnight cannot be confused with an uncalibrated clock. */
+void wifi_config_set_clock_status(bool available, const char *clock_text);
 
 /*
  * Display brightness (feature 007). Value is a percentage 0..100. Loaded from

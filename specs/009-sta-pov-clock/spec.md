@@ -37,7 +37,7 @@ As the hardware builder, I want a recommended steady motor speed for the round P
 **Acceptance Scenarios**:
 
 1. **Given** the PCB is spinning at the nominal target of 600 RPM, **When** the speed is measured, **Then** the device marks the rotation as suitable for POV clock display.
-2. **Given** the measured speed is within the supported operating range of 480 RPM to 720 RPM, **When** POV rendering is active, **Then** the display remains readable and synchronized to the measured rotation period.
+2. **Given** the measured speed is within the supported operating range of 480 RPM to 800 RPM, **When** POV rendering is active, **Then** the display remains readable and synchronized to the measured rotation period.
 3. **Given** the measured speed is outside the supported operating range, **When** POV rendering is active, **Then** the device avoids presenting a misleading clock image and indicates that the spin speed needs adjustment.
 4. **Given** the motor speed varies, **When** the speed changes gradually within the supported range, **Then** the display timing follows the measured rotation period without requiring a restart.
 
@@ -96,7 +96,7 @@ As the device operator, I want the clock to degrade safely when time calibration
 - **FR-004**: The system MUST show or expose a not-calibrated status when current time is unavailable.
 - **FR-005**: The system MUST use the Hall-sensor rotation measurement as the source of current PCB spin speed and rotation period.
 - **FR-006**: The system MUST define 600 RPM as the nominal recommended motor target for the POV clock.
-- **FR-007**: The system MUST define 480 RPM to 720 RPM as the supported operating range for initial POV clock validation.
+- **FR-007**: The system MUST define 480 RPM to 800 RPM as the supported operating range for initial POV clock validation.
 - **FR-008**: The system MUST classify rotation as unsuitable when speed is outside the supported operating range or when the rotation measurement is stale.
 - **FR-009**: The system MUST synchronize POV display timing to the measured rotation period rather than assuming a fixed motor speed.
 - **FR-010**: The system MUST render the current time on the spinning 57-LED radial row in 24-hour `HH:MM:SS CST` format.
@@ -122,7 +122,7 @@ As the device operator, I want the clock to degrade safely when time calibration
 - **SC-001**: After STA mode obtains network access, time calibration completes within 10 seconds in at least 95% of attempts on a reachable network.
 - **SC-002**: After calibration, the displayed CST time is within plus or minus 1 second of a trusted UTC+8 reference during a 10-minute validation run.
 - **SC-003**: At the nominal 600 RPM target, the POV clock is readable as `HH:MM:SS CST` from a normal viewing distance for at least 90% of observed seconds during a 2-minute test.
-- **SC-004**: Within the supported 480 RPM to 720 RPM range, the display remains synchronized to rotation with no persistent angular drift over at least 100 consecutive revolutions.
+- **SC-004**: Within the supported 480 RPM to 800 RPM range, the display remains synchronized to rotation with no persistent angular drift over at least 100 consecutive revolutions.
 - **SC-005**: The displayed seconds value changes exactly once for each wall-clock second during a continuous 5-minute run.
 - **SC-006**: When rotation stops or the speed becomes unsuitable, the system leaves normal clock display within 2 revolutions or 1 second, whichever occurs first.
 - **SC-007**: When time is unavailable, the system never displays a normal-looking clock value during validation.
@@ -157,6 +157,6 @@ As the device operator, I want the clock to degrade safely when time calibration
 - The first user-visible time format is `HH:MM:SS CST` in 24-hour format; date display is out of scope for this feature.
 - The PCB has one radial row of 57 LEDs spinning around the PCB center, and the Hall sensor provides one fresh rotation-period measurement per revolution.
 - The recommended nominal speed is 600 RPM because a 57-pixel WS2812 row needs enough per-column transfer time to render a compact full clock string without overrunning the LED update path.
-- The supported speed range of 480 RPM to 720 RPM is an initial validation range; later planning or hardware tests may tighten the range if display readability requires it.
+- The supported speed range of 480 RPM to 800 RPM is an initial validation range; later planning or hardware tests may tighten the range if display readability requires it.
 - Motor control is out of scope for this feature; the feature measures speed and reports suitability, while the builder provides the motor and sets its speed.
 - Existing Wi-Fi configuration behavior outside STA-mode time calibration is unchanged by this feature.

@@ -90,6 +90,7 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
     if (measurement == nullptr || !measurement->valid || measurement->stale) {
         rotation->rpm = 0.0f;
         rotation->period_us = 0u;
+        rotation->phase_reference_us = 0u;
         rotation->fresh = false;
         rotation->within_range = false;
         rotation->stable = false;
@@ -97,19 +98,27 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
         return rotation->status;
     }
 
+    bool new_sample = measurement->sample_generation != rotation->sample_generation;
     rotation->rpm = measurement->rpm;
     rotation->period_us = measurement->period_us;
+    rotation->phase_reference_us = measurement->reference_edge_us;
     rotation->fresh = true;
     rotation->within_range = measurement->rpm >= (float)POV_CLOCK_MIN_RPM &&
                              measurement->rpm <= (float)POV_CLOCK_MAX_RPM;
 
-    if (rotation->previous_period_us == 0u) {
-        rotation->stable = true;
-    } else {
-        uint32_t diff = abs_diff_u32(rotation->previous_period_us, measurement->period_us);
-        rotation->stable = (diff * 100u) <= (rotation->previous_period_us * kInstabilityPercent);
+    if (new_sample) {
+        if (rotation->previous_period_us == 0u) {
+            rotation->stable = true;
+        } else {
+            uint32_t diff = abs_diff_u32(rotation->previous_period_us,
+                                         measurement->period_us);
+            rotation->stable =
+                (diff * 100u) <=
+                (rotation->previous_period_us * kInstabilityPercent);
+        }
+        rotation->previous_period_us = measurement->period_us;
+        rotation->sample_generation = measurement->sample_generation;
     }
-    rotation->previous_period_us = measurement->period_us;
 
     if (measurement->rpm < (float)POV_CLOCK_MIN_RPM) {
         rotation->status = POV_CLOCK_ROTATION_TOO_SLOW;

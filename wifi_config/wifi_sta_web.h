@@ -29,8 +29,11 @@ extern "C" {
 
 /*
  * wifi_sta_web_build_status_page() — render the Overview screen (GET /).
- * Sidebar + metric cards for Status, Network (SSID), IP Address, and blink
- * state/frequency, plus an optional notice banner. Values are as of page load.
+ * Sidebar + metric cards for Status, Network (SSID), IP Address, blink
+ * state/frequency, and rotation speed, plus an optional notice banner. Values
+ * are as of page load. Current Clock shows calibrated HH:MM:SS CST or an
+ * unavailable placeholder. Rotation speed is unavailable until the first valid
+ * measurement, then shown as whole-number RPM (including 0 RPM when stopped).
  */
 int wifi_sta_web_build_status_page(char *buf, size_t buflen,
                                    const char *ssid,
@@ -38,6 +41,10 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
                                    const char *connectivity_state,
                                    bool blink_active,
                                    uint32_t blink_hz,
+                                   bool clock_available,
+                                   const char *clock_text,
+                                   bool rotation_speed_available,
+                                   uint32_t rotation_speed_rpm,
                                    const char *notice);
 
 /*

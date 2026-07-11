@@ -53,7 +53,7 @@
 
 **Goal**: Classify Hall-sensor speed around the 600 RPM nominal target and expose suitability for rendering.
 
-**Independent Test**: Spin at 600 RPM and confirm the device reports suitable; vary below 480 RPM and above 720 RPM and confirm unsuitable states.
+**Independent Test**: Spin at 600 RPM and confirm the device reports suitable; vary below 480 RPM and above 800 RPM and confirm unsuitable states.
 
 - [x] T015 [US2] Implement rotation suitability derivation from `hall_rotation_measurement_t` in `pov_clock.cpp`
 - [x] T016 [US2] Track recent rotation-period changes for basic stability classification in `pov_clock.cpp`
@@ -66,12 +66,12 @@
 
 ## Phase 5: User Story 3 - Display Current Time with POV (Priority: P1)
 
-**Goal**: Render the current CST time as a compact 48-column POV clock on the spinning 57-LED row.
+**Goal**: Render the current CST time as a compact 40-column POV clock on the spinning 57-LED row.
 
 **Independent Test**: With calibrated time and suitable rotation, observe `HH:MM:SS CST` for at least one minute and confirm the seconds change once per second.
 
 - [x] T019 [US3] Add compact glyph table for digits, colon, space, C, S, and T in `pov_clock_renderer.cpp`
-- [x] T020 [US3] Implement `HH:MM:SS CST` text layout into 48 angular columns in `pov_clock_renderer.cpp`
+- [x] T020 [US3] Implement `HH:MM:SS CST` text layout into 40 angular columns in `pov_clock_renderer.cpp`
 - [x] T021 [US3] Implement measured-period column scheduling in `pov_clock_renderer.cpp`
 - [x] T022 [US3] Render one 57-word column frame from renderer state in `pov_clock_renderer.cpp`
 - [x] T023 [US3] Replace Hello-demo playback with clock renderer orchestration in `pov_leds.cpp`

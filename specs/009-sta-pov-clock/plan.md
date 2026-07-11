@@ -12,7 +12,7 @@ renders a compact `HH:MM:SS CST` POV clock on the 57-LED radial row. The design
 keeps the existing super-loop, raw-lwIP polling model, DMA -> TX FIFO -> PIO
 WS2812 output path, and statically bounded memory. A small raw UDP time client
 calibrates time without sockets, a display state module owns CST conversion and
-health, and a 48-column renderer advances columns from the measured rotation
+health, and a 40-column renderer advances columns from the measured rotation
 period.
 
 ## Technical Context
@@ -38,7 +38,7 @@ existing firmware super-loop
 
 **Performance Goals**: Time calibration within 10 seconds on a reachable
 network; displayed CST time within +/-1 second after calibration; nominal 600
-RPM spin target with supported 480-720 RPM validation range; 48 angular columns
+RPM spin target with supported 480-800 RPM validation range; 40 angular columns
 per revolution with per-column intervals derived from measured period; leave
 normal clock mode within 2 revolutions or 1 second after invalid time/rotation
 
@@ -91,7 +91,7 @@ time_sync.h             # raw-lwIP network time calibration interface
 time_sync.cpp           # DNS + raw UDP NTP request/response state machine
 pov_clock.h             # CST clock state, rotation suitability, display health API
 pov_clock.cpp           # pure time conversion and suitability derivation
-pov_clock_renderer.h    # compact 48-column POV clock renderer interface
+pov_clock_renderer.h    # compact 40-column POV clock renderer interface
 pov_clock_renderer.cpp  # HH:MM:SS CST glyph layout and column frame generation
 pov_leds.cpp            # top-level orchestration of Wi-Fi, time, rotation, renderer
 CMakeLists.txt          # add new sources and keep existing libraries

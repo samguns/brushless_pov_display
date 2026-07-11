@@ -32,5 +32,5 @@
 ## Notes
 
 - Validation iteration 1 passed. The specification includes no clarification markers, defines the UTC+8/CST assumption, bounds motor-control scope, and records the constitution-required RAM-budget expectation.
-- Validation iteration 2 passed after correcting the nominal speed to 600 RPM and initial supported range to 480-720 RPM to keep the clock-string POV timing physically achievable with 57 WS2812 LEDs.
+- Validation iteration 2 passed after correcting the nominal speed to 600 RPM and initial supported range to 480-800 RPM to keep the clock-string POV timing physically achievable with 57 WS2812 LEDs.
 - Optional post-specify hook available: `speckit.agent-context.update`.

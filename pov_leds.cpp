@@ -120,6 +120,8 @@ int main() {
     pov_clock_health_t last_health = POV_CLOCK_HEALTH_TIME_UNAVAILABLE;
     bool time_loaded = false;
     bool dma_stall_warned = false;
+    bool rotation_speed_available = false;
+    uint32_t rotation_speed_rpm = 0;
 
     // Commit a candidate image only after normal WiFi/display initialization.
     wifi_fw_update_boot_status();
@@ -169,6 +171,12 @@ int main() {
 
         if (hall_ok) {
             hall_rotation_measurement_t measurement = hall_sensor_read(&hall, now_us);
+            if (measurement.valid && !measurement.stale) {
+                rotation_speed_available = true;
+                rotation_speed_rpm = (uint32_t)(measurement.rpm + 0.5f);
+            } else if (rotation_speed_available && measurement.stale) {
+                rotation_speed_rpm = 0u;
+            }
             pov_clock_rotation_status_t status = pov_clock_rotation_update(&rotation, &measurement);
             if (status != last_rotation_status) {
                 last_rotation_status = status;
@@ -200,7 +208,14 @@ int main() {
 
         if (ws2812_driver_is_ready(&driver)) {
             if (health == POV_CLOCK_HEALTH_NORMAL) {
-                if (pov_clock_renderer_step(&renderer, rotation.period_us, now_us)) {
+                uint32_t frame_duration_us =
+                    ws2812_driver_get_frame_duration_us(
+                        &driver, driver.strip.active_count);
+                uint64_t presentation_us = now_us + frame_duration_us;
+                if (pov_clock_renderer_step(&renderer,
+                                            rotation.period_us,
+                                            rotation.phase_reference_us,
+                                            presentation_us)) {
                     pov_clock_renderer_render_current(&renderer,
                                                       frame_words,
                                                       POV_LED_MAX_COUNT,
@@ -232,6 +247,9 @@ int main() {
 
         wifi_config_set_blink_status(ws2812_driver_is_ready(&driver),
                                      health == POV_CLOCK_HEALTH_NORMAL ? 10u : 1u);
+        wifi_config_set_rotation_speed_status(rotation_speed_available,
+                                              rotation_speed_rpm);
+        wifi_config_set_clock_status(clock_time.calibrated, clock_time.text);
         tight_loop_contents();
     }
 }

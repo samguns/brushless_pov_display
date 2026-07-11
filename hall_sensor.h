@@ -56,6 +56,8 @@ typedef struct {
     bool valid;            /* true when a fresh in-range measurement exists */
     bool stale;            /* true when no edge within stop_timeout (speed = 0) */
     uint64_t last_update_us;/* timestamp when this result was computed */
+    uint64_t reference_edge_us; /* latest accepted Hall edge (angular phase) */
+    uint32_t sample_generation; /* accepted edge count for sample identity */
 } hall_rotation_measurement_t;
 
 /* Top-level driver instance. */
@@ -89,6 +91,7 @@ uint32_t hall_sensor_get_edge_count(const hall_sensor_t *sensor);
 hall_rotation_measurement_t hall_sensor_derive(uint32_t last_interval_us,
                                                uint64_t last_edge_us,
                                                bool has_two_edges,
+                                               uint32_t edge_count,
                                                const hall_sensor_config_t *config,
                                                uint64_t now_us);
 
