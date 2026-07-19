@@ -27,6 +27,7 @@ extern "C" {
  *   GET  /        -> status page (SSID + IP + "Update firmware")
  *   GET  /update  -> firmware-update confirmation page (60 s countdown)
  *   POST /update  -> confirm: reboot into USB mass-storage (BOOTSEL) mode
+ *   GET/POST /reboot -> confirmed normal software restart
  */
 
 /*
@@ -50,7 +51,6 @@ void wifi_sta_http_poll(void);
 void wifi_sta_http_set_runtime_status(const char *connectivity_state,
                                       const char *ip,
                                       bool blink_active,
-                                      uint32_t blink_hz,
                                       bool clock_available,
                                       const char *clock_text,
                                       bool rotation_speed_available,

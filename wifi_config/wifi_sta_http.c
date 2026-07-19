@@ -7,6 +7,7 @@
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "pico/bootrom.h"
+#include "hardware/watchdog.h"
 #include "lwip/tcp.h"
 
 #include "wifi_sta_web.h"
@@ -32,9 +33,10 @@
 static struct tcp_pcb *s_listen_pcb = NULL;
 static struct tcp_pcb *s_client_pcb = NULL;
 
-/* Set by the recv callback after a confirmed POST /update; consumed by poll()
- * which flushes the response and reboots into USB MSD mode (FR-010). */
-static bool s_reboot_pending = false;
+typedef enum { REBOOT_NONE = 0, REBOOT_NORMAL, REBOOT_USB_BOOTSEL } reboot_target_t;
+
+/* Set after an acknowledgement is queued; consumed by poll() after flush. */
+static reboot_target_t s_reboot_target = REBOOT_NONE;
 static bool s_ota_upload = false;
 static uint32_t s_ota_restart_at_ms = 0;
 
@@ -43,7 +45,6 @@ static char s_ssid[33] = {0};
 static char s_ip[16]   = {0};
 static char s_connectivity_state[20] = "connected";
 static bool s_blink_active = false;
-static uint32_t s_blink_hz = 0;
 static bool s_rotation_speed_available = false;
 static uint32_t s_rotation_speed_rpm = 0;
 static bool s_clock_available = false;
@@ -87,6 +88,11 @@ static bool        s_tx_active = false;
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
+}
+
+static bool reboot_is_available(void) {
+    return s_reboot_target == REBOOT_NONE && !s_ota_upload &&
+           s_ota_restart_at_ms == 0u && !wifi_fw_update_in_progress();
 }
 
 static int hex_value(char c) {
@@ -438,7 +444,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     } else if (strncmp(s_req_buf, "GET /status", 11) == 0) {
         int json_len = wifi_sta_web_build_status_json(
             s_page_buf, sizeof(s_page_buf), s_ip, s_connectivity_state,
-            s_blink_active, s_blink_hz);
+            s_blink_active);
         if (json_len < 0) json_len = 0;
         s_page_buf[json_len] = '\0';
         send_json_response(pcb, 200, "OK", s_page_buf);
@@ -462,8 +468,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         if (slen == 0 || slen > WIFI_SSID_MAX_LEN || plen < 8 || plen > WIFI_PASS_MAX_LEN) {
             int page_len = wifi_sta_web_build_settings_page(
                 s_page_buf, sizeof(s_page_buf), s_ssid, s_ip, NULL, 0,
-                (uint8_t)wifi_config_get_brightness(),
-                "Invalid input: SSID must be 1-32 characters and the WPA2 "
+                (uint8_t)wifi_config_get_brightness(), reboot_is_available(), "Invalid input: SSID must be 1-32 characters and the WPA2 "
                 "password 8-63 characters.");
             send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
             s_req_len = 0;
@@ -499,7 +504,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
 
         int page_len = wifi_sta_web_build_settings_page(
             s_page_buf, sizeof(s_page_buf), s_ssid, s_ip, NULL, 0,
-            (uint8_t)wifi_config_get_brightness(), "Brightness updated.");
+            (uint8_t)wifi_config_get_brightness(), reboot_is_available(), "Brightness updated.");
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
     } else if (strncmp(s_req_buf, "GET /wifi", 9) == 0 ||
@@ -526,8 +531,32 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         int page_len = wifi_sta_web_build_settings_page(
             s_page_buf, sizeof(s_page_buf), s_ssid, s_ip,
             do_scan ? results : NULL, do_scan ? n_results : 0,
-            (uint8_t)wifi_config_get_brightness(), notice);
+            (uint8_t)wifi_config_get_brightness(), reboot_is_available(), notice);
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
+        s_req_len = 0;
+    } else if (strncmp(s_req_buf, "POST /reboot ", 13) == 0) {
+        if (!reboot_is_available()) {
+            int page_len = wifi_sta_web_build_reboot_unavailable_page(s_page_buf, sizeof(s_page_buf));
+            send_response(pcb, 409, "Conflict", s_page_buf, page_len > 0 ? page_len : 0);
+        } else {
+            int page_len = wifi_sta_web_build_restart_accepted_page(s_page_buf, sizeof(s_page_buf));
+            send_response(pcb, 202, "Accepted", s_page_buf, page_len > 0 ? page_len : 0);
+            s_reboot_target = REBOOT_NORMAL;
+            printf("[wifi_sta_http] normal reboot accepted\n");
+        }
+        s_req_len = 0;
+    } else if (strncmp(s_req_buf, "GET /reboot ", 12) == 0) {
+        int page_len;
+        int status;
+        const char *text;
+        if (reboot_is_available()) {
+            page_len = wifi_sta_web_build_reboot_page(s_page_buf, sizeof(s_page_buf));
+            status = 200; text = "OK";
+        } else {
+            page_len = wifi_sta_web_build_reboot_unavailable_page(s_page_buf, sizeof(s_page_buf));
+            status = 409; text = "Conflict";
+        }
+        send_response(pcb, status, text, s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
     } else if (strncmp(s_req_buf, "POST /update", 12) == 0) {
         /* Firmware update confirmation is unauthenticated: any confirmed POST
@@ -535,7 +564,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         int page_len = wifi_sta_web_build_rebooting_page(s_page_buf, sizeof(s_page_buf));
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
-        s_reboot_pending = true;
+        s_reboot_target = REBOOT_USB_BOOTSEL;
         printf("[wifi_sta_http] firmware update confirmed\n");
     } else if (strncmp(s_req_buf, "GET /update", 11) == 0) {
         /* Confirmation page with 60 s countdown (FR-009) */
@@ -549,7 +578,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         /* Status page (FR-006, FR-007) */
         int page_len = wifi_sta_web_build_status_page(
             s_page_buf, sizeof(s_page_buf), s_ssid, s_ip,
-            s_connectivity_state, s_blink_active, s_blink_hz,
+            s_connectivity_state, s_blink_active,
             s_clock_available, s_clock_text,
             s_rotation_speed_available, s_rotation_speed_rpm,
             s_reconfig_notice[0] ? s_reconfig_notice : NULL);
@@ -613,7 +642,7 @@ static err_t on_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
 /* ---- public API ----------------------------------------------------- */
 
 void wifi_sta_http_start(const char *ssid, const char *ip) {
-    s_reboot_pending = false;
+    s_reboot_target = REBOOT_NONE;
     s_ota_restart_at_ms = 0;
     s_client_pcb     = NULL;
     s_req_len        = 0;
@@ -659,11 +688,9 @@ void wifi_sta_http_poll(void) {
         wifi_fw_update_perform();
     }
 
-    if (!s_reboot_pending) return;
+    if (s_reboot_target == REBOOT_NONE) return;
 
-    /* Allow lwIP to flush the (chunked) response and close the connection before
-     * we hand control to the ROM bootloader (the browser must get its reply).
-     * Wait until the streamed body is fully queued/sent, then a short grace. */
+    /* Let the browser receive the acknowledgement before either reset target. */
     absolute_time_t deadline = make_timeout_time_ms(3000);
     while (s_tx_active && !time_reached(deadline)) {
         cyw43_arch_poll();
@@ -675,16 +702,20 @@ void wifi_sta_http_poll(void) {
         sleep_ms(10);
     }
 
-    printf("[wifi_sta_http] reset_usb_boot() — rebooting to USB MSD\n");
-    sleep_ms(50);                 /* let the final log line flush over USB */
-    reset_usb_boot(0, 0);         /* enter USB mass-storage (BOOTSEL) mode */
-    /* does not return */
+    if (s_reboot_target == REBOOT_NORMAL) {
+        printf("[wifi_sta_http] watchdog rebooting normally\n");
+        watchdog_reboot(0, 0, 1);
+        while (true) tight_loop_contents();
+    }
+
+    printf("[wifi_sta_http] reset_usb_boot() - rebooting to USB MSD\n");
+    sleep_ms(50);
+    reset_usb_boot(0, 0);
 }
 
 void wifi_sta_http_set_runtime_status(const char *connectivity_state,
                                       const char *ip,
                                       bool blink_active,
-                                      uint32_t blink_hz,
                                       bool clock_available,
                                       const char *clock_text,
                                       bool rotation_speed_available,
@@ -697,7 +728,6 @@ void wifi_sta_http_set_runtime_status(const char *connectivity_state,
     s_ip[sizeof(s_ip) - 1] = '\0';
 
     s_blink_active = blink_active;
-    s_blink_hz = blink_hz;
     s_clock_available = clock_available && clock_text && clock_text[0];
     if (s_clock_available) {
         strncpy(s_clock_text, clock_text, sizeof(s_clock_text) - 1u);

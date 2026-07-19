@@ -37,8 +37,6 @@ typedef struct {
     char active_ip[16];
 
     bool blink_active;
-    uint32_t blink_frequency_hz;
-
     bool rotation_speed_available;
     uint32_t rotation_speed_rpm;
 
@@ -217,7 +215,6 @@ void wifi_config_runtime_step(void) {
         wifi_sta_http_set_runtime_status(state_text(s_runtime.connectivity_state),
                                          s_runtime.active_ip,
                                          s_runtime.blink_active,
-                                         s_runtime.blink_frequency_hz,
                                          s_runtime.clock_available,
                                          s_runtime.clock_text,
                                          s_runtime.rotation_speed_available,
@@ -415,20 +412,15 @@ const char *wifi_config_get_active_ip(void) {
     return s_runtime.active_ip;
 }
 
-void wifi_config_set_blink_status(bool active, uint32_t frequency_hz) {
+void wifi_config_set_blink_status(bool active) {
     if (s_runtime.blink_active != active) {
         WIFI_LOG_BLINK("state -> %s", active ? "active" : "inactive");
     }
     s_runtime.blink_active = active;
-    s_runtime.blink_frequency_hz = frequency_hz;
 }
 
 bool wifi_config_get_blink_active(void) {
     return s_runtime.blink_active;
-}
-
-uint32_t wifi_config_get_blink_frequency_hz(void) {
-    return s_runtime.blink_frequency_hz;
 }
 
 void wifi_config_set_rotation_speed_status(bool available, uint32_t rpm) {

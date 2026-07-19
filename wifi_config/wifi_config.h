@@ -82,11 +82,9 @@ const char *wifi_config_get_connectivity_state_text(void);
 bool wifi_config_is_portal_ready(void);
 const char *wifi_config_get_active_ip(void);
 
-/* Blink status published by the main loop for STA status reporting. */
-void wifi_config_set_blink_status(bool active, uint32_t frequency_hz);
+/* Display-driver readiness published by the main loop for STA status reporting. */
+void wifi_config_set_blink_status(bool active);
 bool wifi_config_get_blink_active(void);
-uint32_t wifi_config_get_blink_frequency_hz(void);
-
 /* Latest operator-facing Hall rotation status for the STA Overview page.
  * available becomes true after the first valid measurement; rpm is rounded
  * to a whole number and is zero when previously measured rotation has stopped. */

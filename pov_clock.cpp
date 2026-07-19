@@ -6,7 +6,6 @@
 namespace {
 constexpr uint32_t kSecondsPerDay = 24u * 60u * 60u;
 constexpr uint32_t kUsPerSecond = 1000000u;
-constexpr uint32_t kInstabilityPercent = 15u;
 
 uint32_t abs_diff_u32(uint32_t a, uint32_t b) {
     return (a > b) ? (a - b) : (b - a);
@@ -95,36 +94,89 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
         rotation->within_range = false;
         rotation->stable = false;
         rotation->status = POV_CLOCK_ROTATION_UNAVAILABLE;
+        /* Reset the smoothing window so a resumed spin starts clean. */
+        rotation->hist_count = 0u;
+        rotation->hist_head = 0u;
+        rotation->period_sum = 0u;
+        rotation->smoothed_period_us = 0u;
         return rotation->status;
     }
 
-    bool new_sample = measurement->sample_generation != rotation->sample_generation;
-    rotation->rpm = measurement->rpm;
-    rotation->period_us = measurement->period_us;
-    rotation->phase_reference_us = measurement->reference_edge_us;
     rotation->fresh = true;
-    rotation->within_range = measurement->rpm >= (float)POV_CLOCK_MIN_RPM &&
-                             measurement->rpm <= (float)POV_CLOCK_MAX_RPM;
+    /* Angular phase always tracks the real latest edge; only the period/speed is
+     * smoothed (feature 019). */
+    rotation->phase_reference_us = measurement->reference_edge_us;
 
+    bool new_sample = measurement->sample_generation != rotation->sample_generation;
     if (new_sample) {
-        if (rotation->previous_period_us == 0u) {
-            rotation->stable = true;
-        } else {
-            uint32_t diff = abs_diff_u32(rotation->previous_period_us,
-                                         measurement->period_us);
-            rotation->stable =
-                (diff * 100u) <=
-                (rotation->previous_period_us * kInstabilityPercent);
-        }
-        rotation->previous_period_us = measurement->period_us;
         rotation->sample_generation = measurement->sample_generation;
+        uint32_t sample = measurement->period_us;
+
+        /* Outlier rejection: once enough history exists, drop samples that deviate
+         * implausibly from the current mean (missed magnet ~2x, bounce ~0.5x). */
+        bool outlier = false;
+        if (rotation->hist_count >= (uint8_t)POV_CLOCK_SPEED_MIN_SAMPLES &&
+            rotation->smoothed_period_us > 0u) {
+            uint32_t diff = abs_diff_u32(sample, rotation->smoothed_period_us);
+            outlier = (diff * 100u) >
+                      (rotation->smoothed_period_us *
+                       (uint32_t)POV_CLOCK_SPEED_OUTLIER_PCT);
+        }
+
+        if (!outlier) {
+            /* Bounded moving average: push into the ring, evicting the oldest. */
+            if (rotation->hist_count < (uint8_t)POV_CLOCK_SPEED_WINDOW) {
+                rotation->period_hist[rotation->hist_head] = sample;
+                rotation->period_sum += sample;
+                rotation->hist_count++;
+            } else {
+                rotation->period_sum -= rotation->period_hist[rotation->hist_head];
+                rotation->period_hist[rotation->hist_head] = sample;
+                rotation->period_sum += sample;
+            }
+            rotation->hist_head =
+                (uint8_t)((rotation->hist_head + 1u) % (uint8_t)POV_CLOCK_SPEED_WINDOW);
+            rotation->smoothed_period_us =
+                (uint32_t)(rotation->period_sum / rotation->hist_count);
+            rotation->previous_period_us = sample;
+
+            /* Hysteresis on the stable decision (accepted samples only). */
+            if (rotation->hist_count >= (uint8_t)POV_CLOCK_SPEED_MIN_SAMPLES) {
+                uint32_t dev = abs_diff_u32(sample, rotation->smoothed_period_us);
+                uint32_t dev_pct = (rotation->smoothed_period_us > 0u)
+                    ? (dev * 100u) / rotation->smoothed_period_us : 100u;
+                if (rotation->stable) {
+                    if (dev_pct > (uint32_t)POV_CLOCK_SPEED_STABLE_EXIT_PCT) {
+                        rotation->stable = false;
+                    }
+                } else if (dev_pct <= (uint32_t)POV_CLOCK_SPEED_STABLE_ENTER_PCT) {
+                    rotation->stable = true;
+                }
+            } else {
+                rotation->stable = false;  /* not yet confident */
+            }
+        }
+        /* Outlier: leave ring, smoothed period, and stability unchanged. */
     }
 
-    if (measurement->rpm < (float)POV_CLOCK_MIN_RPM) {
+    /* Rendering outputs come from the smoothed estimate (raw until the first
+     * accepted sample exists). */
+    uint32_t eff_period = (rotation->smoothed_period_us > 0u)
+                              ? rotation->smoothed_period_us
+                              : measurement->period_us;
+    rotation->period_us = eff_period;
+    rotation->rpm = (eff_period > 0u)
+                        ? (float)HALL_US_PER_MINUTE / (float)eff_period
+                        : 0.0f;
+    rotation->within_range = rotation->rpm >= (float)POV_CLOCK_MIN_RPM &&
+                             rotation->rpm <= (float)POV_CLOCK_MAX_RPM;
+
+    bool confident = rotation->hist_count >= (uint8_t)POV_CLOCK_SPEED_MIN_SAMPLES;
+    if (rotation->rpm < (float)POV_CLOCK_MIN_RPM) {
         rotation->status = POV_CLOCK_ROTATION_TOO_SLOW;
-    } else if (measurement->rpm > (float)POV_CLOCK_MAX_RPM) {
+    } else if (rotation->rpm > (float)POV_CLOCK_MAX_RPM) {
         rotation->status = POV_CLOCK_ROTATION_TOO_FAST;
-    } else if (!rotation->stable) {
+    } else if (!confident || !rotation->stable) {
         rotation->status = POV_CLOCK_ROTATION_UNSTABLE;
     } else {
         rotation->status = POV_CLOCK_ROTATION_SUITABLE;

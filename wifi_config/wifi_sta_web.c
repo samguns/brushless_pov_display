@@ -214,7 +214,6 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
                                    const char *ip,
                                    const char *connectivity_state,
                                    bool blink_active,
-                                   uint32_t blink_hz,
                                    bool clock_available,
                                    const char *clock_text,
                                    bool rotation_speed_available,
@@ -253,10 +252,6 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
         "<div class=\"metric\"><div class=\"k\">Blink</div>"
         "<div class=\"v\">%s</div></div>",
         blink_active ? "Active" : "Idle");
-    STA_APPEND(
-        "<div class=\"metric\"><div class=\"k\">Blink Frequency</div>"
-        "<div class=\"v\">%u Hz</div></div>",
-        (unsigned)blink_hz);
     if (rotation_speed_available) {
         STA_APPEND(
             "<div class=\"metric\"><div class=\"k\">Rotation Speed</div>"
@@ -282,6 +277,7 @@ int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
                                      const scan_result_t *results,
                                      int n_results,
                                      uint8_t brightness,
+                                     bool reboot_available,
                                      const char *notice) {
     int r = shell_open(buf, buflen, 0, "Settings", "settings");
     if (r < 0) return -1;
@@ -341,13 +337,14 @@ int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
         "<div class=\"card\"><div class=\"k\">System</div>"
         "<div class=\"row\"><div class=\"lbl\">Firmware Version</div>"
         "<div class=\"val\">%s</div></div>"
-        "<div class=\"row\"><a class=\"btn danger\" href=\"/update\">"
-        "Update Firmware (USB)</a></div>"
-        "<div class=\"row\"><a class=\"btn primary\" href=\"/ota\">"
-        "Update Firmware (OTA)</a></div>"
-        "</div>",
+        "<div class=\"row\"><a class=\"btn danger\" href=\"/update\">Update Firmware (USB)</a></div>"
+        "<div class=\"row\"><a class=\"btn primary\" href=\"/ota\">Update Firmware (OTA)</a></div>",
         WIFI_STA_FW_VERSION);
-
+    if (reboot_available) {
+        STA_APPEND("<div class=\"row\"><a class=\"btn\" href=\"/reboot\">Reboot</a><div class=\"desc\">Restart normally; display and network pause briefly.</div></div>");
+    } else {
+        STA_APPEND("<div class=\"row\"><button class=\"btn\" type=\"button\" disabled>Reboot</button><div class=\"desc\">Firmware update or restart is in progress.</div></div>");
+    }
     STA_APPEND("</div>"); /* end col 1 */
 
     /* ---- Column 2: Network ---- */
@@ -478,6 +475,30 @@ int wifi_sta_web_build_rebooting_page(char *buf, size_t buflen) {
     return (int)off;
 }
 
+int wifi_sta_web_build_reboot_page(char *buf, size_t buflen) {
+    int r = shell_open(buf, buflen, 0, "Confirm reboot", "settings");
+    if (r < 0) return -1;
+    size_t off = (size_t)r;
+    STA_APPEND("<div><h1>Restart board</h1></div><div class=\"warn\"><p><strong>Warning:</strong> display and network access will pause briefly.</p><p>The board restarts in normal operating mode. Saved Wi-Fi and display settings are preserved.</p></div><form action=\"/reboot\" method=\"POST\" style=\"display:flex;gap:12px\"><button class=\"btn danger\" type=\"submit\">Confirm reboot</button><a class=\"btn\" href=\"/settings\">Cancel</a></form>");
+    return shell_close(buf, buflen, off);
+}
+
+int wifi_sta_web_build_restart_accepted_page(char *buf, size_t buflen) {
+    int r = shell_open(buf, buflen, 0, "Restart accepted", "settings");
+    if (r < 0) return -1;
+    size_t off = (size_t)r;
+    STA_APPEND("<div><h1>Restart accepted</h1></div><div class=\"warn\"><p>The board is restarting normally. This connection will close shortly.</p><p>Reopen the management address after startup; saved settings are preserved.</p></div>");
+    return shell_close(buf, buflen, off);
+}
+
+int wifi_sta_web_build_reboot_unavailable_page(char *buf, size_t buflen) {
+    int r = shell_open(buf, buflen, 0, "Reboot unavailable", "settings");
+    if (r < 0) return -1;
+    size_t off = (size_t)r;
+    STA_APPEND("<div><h1>Reboot unavailable</h1></div><div class=\"warn\"><p>A firmware update or another restart is in progress. Wait for it to finish before rebooting.</p><a class=\"btn\" href=\"/settings\">Back to Settings</a></div>");
+    return shell_close(buf, buflen, off);
+}
+
 int wifi_sta_web_build_ota_page(char *buf, size_t buflen) {
     int r = shell_open(buf, buflen, 0, "WiFi OTA", "settings");
     if (r < 0) return -1;
@@ -503,17 +524,13 @@ int wifi_sta_web_build_ota_page(char *buf, size_t buflen) {
 int wifi_sta_web_build_status_json(char *buf, size_t buflen,
                                    const char *ip,
                                    const char *connectivity_state,
-                                   bool blink_active,
-                                   uint32_t blink_hz) {
+                                   bool blink_active) {
     int n = snprintf(buf, buflen,
         "{\"wifi\":{\"state\":\"%s\",\"ip\":\"%s\"},"
-        "\"blink\":{\"active\":%s,\"frequency_hz\":%u}}",
+        "\"blink\":{\"active\":%s}}",
         connectivity_state ? connectivity_state : "unknown",
-        ip ? ip : "",
-        blink_active ? "true" : "false",
-        (unsigned)blink_hz);
+        ip ? ip : "", blink_active ? "true" : "false");
     if (n < 0 || (size_t)n >= buflen) return -1;
     return n;
 }
-
 #undef STA_APPEND

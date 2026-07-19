@@ -30,7 +30,7 @@ extern "C" {
 /*
  * wifi_sta_web_build_status_page() — render the Overview screen (GET /).
  * Sidebar + metric cards for Status, Network (SSID), IP Address, blink
- * state/frequency, and rotation speed, plus an optional notice banner. Values
+ * readiness state and rotation speed, plus an optional notice banner. Values
  * are as of page load. Current Clock shows calibrated HH:MM:SS CST or an
  * unavailable placeholder. Rotation speed is unavailable until the first valid
  * measurement, then shown as whole-number RPM (including 0 RPM when stopped).
@@ -40,7 +40,6 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
                                    const char *ip,
                                    const char *connectivity_state,
                                    bool blink_active,
-                                   uint32_t blink_hz,
                                    bool clock_available,
                                    const char *clock_text,
                                    bool rotation_speed_available,
@@ -62,6 +61,7 @@ int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
                                      const scan_result_t *results,
                                      int n_results,
                                      uint8_t brightness,
+                                     bool reboot_available,
                                      const char *notice);
 
 /*
@@ -75,8 +75,7 @@ int wifi_sta_web_build_applying_page(char *buf, size_t buflen,
 int wifi_sta_web_build_status_json(char *buf, size_t buflen,
                                    const char *ip,
                                    const char *connectivity_state,
-                                   bool blink_active,
-                                   uint32_t blink_hz);
+                                   bool blink_active);
 
 /*
  * wifi_sta_web_build_update_page() — firmware-update confirmation page
@@ -90,6 +89,9 @@ int wifi_sta_web_build_update_page(char *buf, size_t buflen);
  * shown just before the device reboots into USB mass-storage mode.
  */
 int wifi_sta_web_build_rebooting_page(char *buf, size_t buflen);
+int wifi_sta_web_build_reboot_page(char *buf, size_t buflen);
+int wifi_sta_web_build_restart_accepted_page(char *buf, size_t buflen);
+int wifi_sta_web_build_reboot_unavailable_page(char *buf, size_t buflen);
 
 int wifi_sta_web_build_ota_page(char *buf, size_t buflen);
 

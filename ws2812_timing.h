@@ -11,7 +11,8 @@ extern "C" {
 
 enum {
     WS2812_BIT_RATE_HZ = 800000u,
-    WS2812_RESET_US = 50u,
+    /* XL-1010RGBC-2812B requires at least 100 us low to latch/reset. */
+    WS2812_RESET_US = 100u,
 };
 
 /* Pure fixed-time budget used by both the hardware driver and host tests. */
@@ -21,6 +22,12 @@ static inline uint32_t ws2812_frame_duration_us(size_t frame_words, bool rgbw) {
     uint64_t wire_us = (total_bits * 1000000u + WS2812_BIT_RATE_HZ - 1u) /
                        WS2812_BIT_RATE_HZ;
     return (uint32_t)(wire_us + WS2812_RESET_US);
+}
+
+/* The PIO shifts MSB-first. RGB pixels occupy the low 24 bits in frame
+ * buffers, so align G7 with OSR bit 31 before DMA feeds the state machine. */
+static inline uint32_t ws2812_dma_word(uint32_t pixel, bool rgbw) {
+    return rgbw ? pixel : (pixel << 8u);
 }
 
 #ifdef __cplusplus

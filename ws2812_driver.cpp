@@ -189,30 +189,26 @@ bool ws2812_driver_submit_frame(ws2812_driver_t *driver,
         return false;
     }
 
-    const uint32_t *src = frame;
-
-    // Apply global brightness by scaling the 24-bit GRB pixel values into a
-    // driver-owned buffer (the DMA reads asynchronously from this address, so it
-    // must persist until the transfer completes — guaranteed by the caller
-    // waiting for !dma_busy before the next submit). Pixel data only; the PIO
-    // bit timing is untouched (constitution I & II).
-    if (driver->brightness < 255) {
-        static uint32_t scaled[POV_LED_MAX_COUNT];
-        uint32_t b = driver->brightness;
-        for (size_t i = 0; i < frame_words; ++i) {
-            uint32_t w = frame[i];
+    // The DMA reads asynchronously, so the staged words must persist until the
+    // transfer completes. It also aligns 24-bit GRB data with the PIO's MSB-first
+    // output shift; an unshifted 0x00GGRRBB word would send 00-G-R and omit blue.
+    static uint32_t staged[POV_LED_MAX_COUNT];
+    uint32_t b = driver->brightness;
+    for (size_t i = 0; i < frame_words; ++i) {
+        uint32_t w = frame[i];
+        if (!driver->rgbw && b < 255u) {
             uint32_t g = (w >> 16) & 0xFFu;
             uint32_t r = (w >> 8) & 0xFFu;
             uint32_t bl = w & 0xFFu;
             g = (g * b) / 255u;
             r = (r * b) / 255u;
             bl = (bl * b) / 255u;
-            scaled[i] = (g << 16) | (r << 8) | bl;
+            w = (g << 16) | (r << 8) | bl;
         }
-        src = scaled;
+        staged[i] = ws2812_dma_word(w, driver->rgbw);
     }
 
-    dma_channel_set_read_addr((uint)driver->dma_chan, src, false);
+    dma_channel_set_read_addr((uint)driver->dma_chan, staged, false);
     dma_channel_set_trans_count((uint)driver->dma_chan, frame_words, true);
     driver->transfer_ready_us =
         time_us_64() + ws2812_frame_duration_us(frame_words, driver->rgbw);

@@ -112,6 +112,10 @@ bool wifi_fw_update_finish(void) {
 
 void wifi_fw_update_abort(const char *reason) { if (s_update.state == WIFI_FW_RECEIVING || s_update.state == WIFI_FW_VALIDATING) fail(reason ? reason : "Upload interrupted."); }
 bool wifi_fw_update_ready(void) { return s_update.state == WIFI_FW_READY; }
+bool wifi_fw_update_in_progress(void) {
+    return s_update.state == WIFI_FW_RECEIVING || s_update.state == WIFI_FW_VALIDATING ||
+           s_update.state == WIFI_FW_READY;
+}
 void wifi_fw_update_perform(void) { if (wifi_fw_update_ready()) { pfb_mark_download_slot_as_valid(); pfb_perform_update(); } }
 wifi_fw_state_t wifi_fw_update_state(void) { return s_update.state; }
 const char *wifi_fw_update_message(void) { return s_update.message[0] ? s_update.message : "No update in progress."; }

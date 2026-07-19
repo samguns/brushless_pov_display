@@ -26,6 +26,13 @@ constexpr uint kDefaultDataPin = 2;
 constexpr uint32_t kHallLogIntervalMs = 1000;
 constexpr uint32_t kStatusFrameIntervalMs = 500;
 constexpr const char *kTimeServer = "ntp.tencent.com";
+
+// Bench test mode: when true, ignore the POV clock/status logic and light every
+// LED with a solid color so wiring + WS2812 protocol can be verified without
+// rotation or NTP. Set to false to restore normal clock rendering.
+constexpr bool kStaticTestPattern = false;
+// Dim white in GRB word order (g<<16 | r<<8 | b) exercises all three channels.
+constexpr uint32_t kStaticTestColor = (32u << 16) | (32u << 8) | 32u;
 }
 
 int main() {
@@ -207,7 +214,22 @@ int main() {
         }
 
         if (ws2812_driver_is_ready(&driver)) {
-            if (health == POV_CLOCK_HEALTH_NORMAL) {
+            if (kStaticTestPattern) {
+                if (status_frame_dirty ||
+                    (now_ms - status_last_ms) >= kStatusFrameIntervalMs) {
+                    status_last_ms = now_ms;
+                    for (size_t i = 0;
+                         i < driver.strip.active_count && i < POV_LED_MAX_COUNT;
+                         ++i) {
+                        frame_words[i] = kStaticTestColor;
+                    }
+                    if (!ws2812_driver_is_dma_busy(&driver)) {
+                        ws2812_driver_submit_frame(&driver, frame_words,
+                                                   driver.strip.active_count);
+                        status_frame_dirty = false;
+                    }
+                }
+            } else if (health == POV_CLOCK_HEALTH_NORMAL) {
                 uint32_t frame_duration_us =
                     ws2812_driver_get_frame_duration_us(
                         &driver, driver.strip.active_count);
@@ -245,8 +267,7 @@ int main() {
             }
         }
 
-        wifi_config_set_blink_status(ws2812_driver_is_ready(&driver),
-                                     health == POV_CLOCK_HEALTH_NORMAL ? 10u : 1u);
+        wifi_config_set_blink_status(ws2812_driver_is_ready(&driver));
         wifi_config_set_rotation_speed_status(rotation_speed_available,
                                               rotation_speed_rpm);
         wifi_config_set_clock_status(clock_time.calibrated, clock_time.text);

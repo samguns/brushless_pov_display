@@ -18,8 +18,6 @@ typedef struct {
     uint64_t phase_reference_us;
     bool phase_locked;
     char text[POV_CLOCK_TEXT_BUF_LEN];
-    uint8_t column_masks[POV_CLOCK_COLUMNS];
-    uint32_t column_colors[POV_CLOCK_COLUMNS];
     bool text_ready;
 } pov_clock_renderer_t;
 

@@ -19,6 +19,7 @@ bool wifi_fw_update_write(const uint8_t *data, size_t len);
 bool wifi_fw_update_finish(void);
 void wifi_fw_update_abort(const char *reason);
 bool wifi_fw_update_ready(void);
+bool wifi_fw_update_in_progress(void);
 void wifi_fw_update_perform(void);
 wifi_fw_state_t wifi_fw_update_state(void);
 const char *wifi_fw_update_message(void);

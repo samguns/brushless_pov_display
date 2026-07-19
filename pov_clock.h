@@ -21,6 +21,17 @@ enum {
     POV_CLOCK_TEXT_BUF_LEN = 9,
 };
 
+/* Rotation-speed smoothing (feature 019): bounded moving average of recent
+ * revolution periods with outlier rejection and hysteresis, so the rendering
+ * cadence stays steady without lagging real speed changes. */
+enum {
+    POV_CLOCK_SPEED_WINDOW = 8,           /* moving-average window (revolutions) */
+    POV_CLOCK_SPEED_MIN_SAMPLES = 3,      /* samples before a confident speed */
+    POV_CLOCK_SPEED_OUTLIER_PCT = 40,     /* reject band vs current mean */
+    POV_CLOCK_SPEED_STABLE_ENTER_PCT = 10,/* enter-stable band */
+    POV_CLOCK_SPEED_STABLE_EXIT_PCT = 25, /* exit-stable band (hysteresis) */
+};
+
 typedef enum {
     POV_CLOCK_ROTATION_UNAVAILABLE = 0,
     POV_CLOCK_ROTATION_TOO_SLOW,
@@ -59,6 +70,12 @@ typedef struct {
     bool stable;
     pov_clock_rotation_status_t status;
     uint32_t previous_period_us;
+    /* Bounded moving-average speed filter state (feature 019). */
+    uint32_t period_hist[POV_CLOCK_SPEED_WINDOW];
+    uint64_t period_sum;
+    uint8_t hist_count;
+    uint8_t hist_head;
+    uint32_t smoothed_period_us;
 } pov_clock_rotation_t;
 
 void pov_clock_time_init(pov_clock_time_t *clock);

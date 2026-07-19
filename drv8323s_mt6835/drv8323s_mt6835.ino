@@ -42,6 +42,9 @@ BLDCMotor motor = BLDCMotor(7);
 // BLDCDriver6PWM driver = BLDCDriver6PWM(M0_INH_A,M0_INL_A, M0_INH_B,M0_INL_B, M0_INH_C,M0_INL_C, EN_GATE);
 DRV8323Driver6PWM driver = DRV8323Driver6PWM(M0_INH_A, M0_INL_A, M0_INH_B, M0_INL_B, M0_INH_C, M0_INL_C, SPI3_CS, EN_GATE);
 
+// default velocity-mode target [rad/s]
+#define DEFAULT_TARGET_VELOCITY 70.0f
+
 // instantiate the commander
 Commander command = Commander(Serial);
 void doMotor(char* cmd) {
@@ -137,7 +140,7 @@ void setup() {
   // control loop type and torque mode
   motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
   motor.torque_controller = TorqueControlType::foc_current;
-  motor.controller = MotionControlType::angle;
+  motor.controller = MotionControlType::velocity;
 
   // controller configuration based on the control type
   motor.PID_velocity.P = 0.3f;
@@ -193,6 +196,11 @@ void setup() {
 
   // init FOC
   motor.initFOC();
+
+  // default running setpoint: velocity control at DEFAULT_TARGET_VELOCITY rad/s
+  motor.target = DEFAULT_TARGET_VELOCITY;
+  Serial.print("Default velocity target [rad/s]: ");
+  Serial.println(motor.target);
 }
 
 void loop() {
