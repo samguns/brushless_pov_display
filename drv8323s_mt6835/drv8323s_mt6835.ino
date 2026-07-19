@@ -8,6 +8,9 @@
 */
 #include <SimpleFOC.h>
 #include <SimpleFOCDrivers.h>
+#include <EEPROM.h>
+#include <math.h>
+#include <string.h>
 #include "drivers/drv8323/drv8323.h"
 #include <encoders/mt6835/MagneticSensorMT6835.h>
 
@@ -50,6 +53,80 @@ Commander command = Commander(Serial);
 void doMotor(char* cmd) {
   command.motor(&motor, cmd);
 }
+
+namespace {
+constexpr uint32_t TARGET_MAGIC = 0x504F5654UL;  // "POVT"
+constexpr uint16_t TARGET_VERSION = 1;
+constexpr int TARGET_EEPROM_ADDRESS = 0;
+
+struct TargetRecord {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t reserved;
+  float target;
+  uint32_t target_bits_inverse;
+};
+
+bool targetIsValid(float target) {
+  return isfinite(target) &&
+         target >= -motor.velocity_limit &&
+         target <= motor.velocity_limit;
+}
+
+float loadTarget() {
+  TargetRecord record{};
+  EEPROM.get(TARGET_EEPROM_ADDRESS, record);
+
+  uint32_t bits = 0;
+  memcpy(&bits, &record.target, sizeof(bits));
+  if (record.magic != TARGET_MAGIC ||
+      record.version != TARGET_VERSION ||
+      record.target_bits_inverse != ~bits ||
+      !targetIsValid(record.target)) {
+    return DEFAULT_TARGET_VELOCITY;
+  }
+  return record.target;
+}
+
+void saveTarget(float target) {
+  uint32_t bits = 0;
+  memcpy(&bits, &target, sizeof(bits));
+
+  TargetRecord record{
+    TARGET_MAGIC,
+    TARGET_VERSION,
+    0,
+    target,
+    ~bits
+  };
+  EEPROM.put(TARGET_EEPROM_ADDRESS, record);
+}
+
+void doSaveTarget(char* cmd) {
+  // Some serial terminals send CRLF, and Commander can leave the CR in the
+  // callback payload. Ignore ASCII whitespace but reject real parameters.
+  while (cmd != nullptr &&
+    (*cmd == ' ' || *cmd == '\t' || *cmd == '\r' || *cmd == '\n')) {
+    ++cmd;
+  }
+  if (cmd != nullptr && cmd[0] != '\0') {
+    Serial.println("Use S without a parameter");
+    return;
+  }
+  if (!targetIsValid(motor.target)) {
+    Serial.println("Target is invalid; not saved");
+    return;
+  }
+
+  // STM32 EEPROM emulation writes flash and can pause execution, so disable
+  // the power stage for the duration of the write.
+  float target = motor.target;
+  saveTarget(target);
+
+  Serial.print("Saved velocity target [rad/s]: ");
+  Serial.println(target);
+}
+}  // namespace
 
 // low side current sensing define
 // 0.0005 Ohm resistor
@@ -117,9 +194,9 @@ void setup() {
   // pwm frequency to be used [Hz]
   driver.pwm_frequency = 25000;
   // power supply voltage [V]
-  driver.voltage_power_supply = 12;
+  driver.voltage_power_supply = 10;
   // Max DC voltage allowed - default voltage_power_supply
-  driver.voltage_limit = 12;
+  driver.voltage_limit = 10;
   // driver init
   driver.init(&SPI_3);
   driver.setGateDriveHS(60.0, 60.0);
@@ -158,9 +235,9 @@ void setup() {
   motor.PID_current_d.I = 100;
 
   // max voltage  allowed for motion control
-  motor.voltage_limit = 12.0;
+  motor.voltage_limit = 10.0;
   motor.velocity_limit = 300;
-  motor.current_limit = 6.0f;
+  motor.current_limit = 1.0f;
   // alignment voltage limit
   motor.voltage_sensor_align = 1;
 
@@ -171,6 +248,7 @@ void setup() {
 
   // add target command T
   command.add('M', doMotor, "motor M0");
+  command.add('S', doSaveTarget, "save velocity target");
 
   // initialise motor
   motor.init();
@@ -197,9 +275,10 @@ void setup() {
   // init FOC
   motor.initFOC();
 
-  // default running setpoint: velocity control at DEFAULT_TARGET_VELOCITY rad/s
-  motor.target = DEFAULT_TARGET_VELOCITY;
-  Serial.print("Default velocity target [rad/s]: ");
+  // Restore the last explicitly saved target, or use the default if EEPROM is
+  // empty, corrupt, or outside the configured velocity limit.
+  motor.target = loadTarget();
+  Serial.print("Velocity target [rad/s]: ");
   Serial.println(motor.target);
 }
 

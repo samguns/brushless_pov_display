@@ -24,11 +24,13 @@ hall_rotation_measurement_t sample(float rpm, uint32_t period_us,
 
 uint32_t abs_diff(uint32_t a, uint32_t b) { return a > b ? a - b : b - a; }
 
-pov_clock_rotation_status_t status_for(float rpm, uint32_t period_us) {
+pov_clock_rotation_status_t status_for_config(float rpm, uint32_t period_us,
+                                              uint16_t rad_s_x100) {
     // Feed enough steady samples to reach the confidence threshold (feature 019
     // no longer trusts a single revolution).
     pov_clock_rotation_t rotation{};
     pov_clock_rotation_init(&rotation);
+    assert(pov_rotation_config_derive(rad_s_x100, &rotation.speed_config));
     pov_clock_rotation_status_t status = POV_CLOCK_ROTATION_UNAVAILABLE;
     for (uint32_t g = 1u; g <= (uint32_t)POV_CLOCK_SPEED_MIN_SAMPLES; ++g) {
         hall_rotation_measurement_t m =
@@ -38,14 +40,45 @@ pov_clock_rotation_status_t status_for(float rpm, uint32_t period_us) {
     return status;
 }
 
+pov_clock_rotation_status_t status_for(float rpm, uint32_t period_us) {
+    return status_for_config(rpm, period_us,
+                             POV_ROTATION_DEFAULT_RAD_S_X100);
+}
+
+void test_rotation_config_derivation() {
+    pov_rotation_config_t config{};
+    assert(pov_rotation_config_derive(4000u, &config));
+    assert(config.rad_s_x100 == 4000u);
+    assert(config.nominal_rpm == 382u);
+    assert(config.min_rpm == 306u);
+    assert(config.max_rpm == 509u);
+    assert(config.period_us == 157080u);
+
+    assert(pov_rotation_config_derive(1000u, &config));
+    assert(config.nominal_rpm == 95u);
+    assert(config.min_rpm == 76u);
+    assert(config.max_rpm == 127u);
+    assert(config.period_us == 628319u);
+    assert(status_for_config(95.0f, config.period_us, 1000u) ==
+           POV_CLOCK_ROTATION_SUITABLE);
+    assert(status_for_config(75.0f, 800000u, 1000u) ==
+           POV_CLOCK_ROTATION_TOO_SLOW);
+    assert(status_for_config(128.0f, 468750u, 1000u) ==
+           POV_CLOCK_ROTATION_TOO_FAST);
+
+    assert(!pov_rotation_config_derive(49u, &config));
+    assert(!pov_rotation_config_derive(6001u, &config));
+}
+
 void test_supported_envelope() {
     assert(POV_CLOCK_COLUMNS == 40);
-    assert(status_for(480.0f, 125000u) == POV_CLOCK_ROTATION_SUITABLE);
-    assert(status_for(600.0f, 100000u) == POV_CLOCK_ROTATION_SUITABLE);
-    assert(status_for(764.0f, 78534u) == POV_CLOCK_ROTATION_SUITABLE);
-    assert(status_for(800.0f, 75000u) == POV_CLOCK_ROTATION_SUITABLE);
-    assert(status_for(479.0f, 125261u) == POV_CLOCK_ROTATION_TOO_SLOW);
-    assert(status_for(801.0f, 74906u) == POV_CLOCK_ROTATION_TOO_FAST);
+    assert(POV_CLOCK_NOMINAL_RAD_PER_SEC == 40);
+    assert(status_for(306.0f, 196078u) == POV_CLOCK_ROTATION_SUITABLE);
+    assert(status_for(382.0f, POV_CLOCK_NOMINAL_PERIOD_US) ==
+           POV_CLOCK_ROTATION_SUITABLE);
+    assert(status_for(509.0f, 117879u) == POV_CLOCK_ROTATION_SUITABLE);
+    assert(status_for(305.0f, 196721u) == POV_CLOCK_ROTATION_TOO_SLOW);
+    assert(status_for(510.0f, 117647u) == POV_CLOCK_ROTATION_TOO_FAST);
 }
 
 void test_speed_calibration() {
@@ -64,14 +97,15 @@ void test_speed_calibration() {
 
     /* Confidence gating (C6): a single/second sample is not yet SUITABLE; the
      * third steady sample is. Phase tracks the real edge (C2). */
-    assert(feed(100000u) != POV_CLOCK_ROTATION_SUITABLE);
-    assert(feed(100000u) != POV_CLOCK_ROTATION_SUITABLE);
-    assert(feed(100000u) == POV_CLOCK_ROTATION_SUITABLE);
+    assert(feed(POV_CLOCK_NOMINAL_PERIOD_US) != POV_CLOCK_ROTATION_SUITABLE);
+    assert(feed(POV_CLOCK_NOMINAL_PERIOD_US) != POV_CLOCK_ROTATION_SUITABLE);
+    assert(feed(POV_CLOCK_NOMINAL_PERIOD_US) == POV_CLOCK_ROTATION_SUITABLE);
     assert(rotation.phase_reference_us == edge);
-    assert(rotation.smoothed_period_us == 100000u);
+    assert(rotation.smoothed_period_us == POV_CLOCK_NOMINAL_PERIOD_US);
 
     /* Generation dedup (C9): re-reading the same generation changes nothing. */
-    hall_rotation_measurement_t same = sample(600.0f, 100000u, edge, gen);
+    hall_rotation_measurement_t same = sample(
+        382.0f, POV_CLOCK_NOMINAL_PERIOD_US, edge, gen);
     uint32_t before = rotation.smoothed_period_us;
     uint8_t before_count = rotation.hist_count;
     assert(pov_clock_rotation_update(&rotation, &same) == POV_CLOCK_ROTATION_SUITABLE);
@@ -79,39 +113,39 @@ void test_speed_calibration() {
     assert(rotation.hist_count == before_count);
 
     /* Variance reduction (C1): alternating +/-2% noise averages to a far tighter
-     * band than the raw +/-2000us swing. */
+     * band than the raw swing. */
     for (int i = 0; i < POV_CLOCK_SPEED_WINDOW; ++i) {
-        feed((i % 2 == 0) ? 102000u : 98000u);
+        feed((i % 2 == 0) ? 160222u : 153938u);
     }
-    assert(rotation.smoothed_period_us >= 99500u &&
-           rotation.smoothed_period_us <= 100500u);
+    assert(rotation.smoothed_period_us >= 156294u &&
+           rotation.smoothed_period_us <= 157866u);
 
     /* Outlier rejection (C3): a missed-magnet (2x) and a bounce (0.5x) barely
      * move the estimate and do not drop stability. */
     uint32_t base = rotation.smoothed_period_us;
-    assert(feed(200000u) == POV_CLOCK_ROTATION_SUITABLE);  /* rejected */
-    assert(feed(50000u) == POV_CLOCK_ROTATION_SUITABLE);   /* rejected */
+    assert(feed(314160u) == POV_CLOCK_ROTATION_SUITABLE);  /* rejected */
+    assert(feed(78540u) == POV_CLOCK_ROTATION_SUITABLE);   /* rejected */
     assert(abs_diff(rotation.smoothed_period_us, base) * 100u <= base * 2u);
 
     /* Hysteresis (C5): an ~18% deviation (between enter 10% and exit 25%) does
      * not destabilize once locked. */
-    assert(feed(118000u) == POV_CLOCK_ROTATION_SUITABLE);
+    assert(feed(185354u) == POV_CLOCK_ROTATION_SUITABLE);
 
-    /* Convergence (C4): a sustained step to 75000us reaches the new period within
+    /* Convergence (C4): a sustained step to 125000us reaches the new period within
      * the window and re-stabilizes. */
-    for (int i = 0; i < POV_CLOCK_SPEED_WINDOW; ++i) feed(75000u);
-    assert(rotation.smoothed_period_us >= 73500u &&
-           rotation.smoothed_period_us <= 76500u);
+    for (int i = 0; i < POV_CLOCK_SPEED_WINDOW; ++i) feed(125000u);
+    assert(rotation.smoothed_period_us >= 122500u &&
+           rotation.smoothed_period_us <= 127500u);
     assert(rotation.status == POV_CLOCK_ROTATION_SUITABLE);
 
     /* Stop resets the window (C8) and a resumed spin is not immediately SUITABLE. */
-    hall_rotation_measurement_t stale = sample(600.0f, 75000u, edge + 1u, gen + 100u);
+    hall_rotation_measurement_t stale = sample(480.0f, 125000u, edge + 1u, gen + 100u);
     stale.valid = false;
     stale.stale = true;
     assert(pov_clock_rotation_update(&rotation, &stale) ==
            POV_CLOCK_ROTATION_UNAVAILABLE);
     assert(rotation.hist_count == 0u);
-    assert(feed(75000u) != POV_CLOCK_ROTATION_SUITABLE);
+    assert(feed(125000u) != POV_CLOCK_ROTATION_SUITABLE);
 }
 
 void test_phase_mapping_and_reanchor() {
@@ -256,6 +290,7 @@ void test_transport_budget() {
 }  // namespace
 
 int main() {
+    test_rotation_config_derivation();
     test_supported_envelope();
     test_speed_calibration();
     test_phase_mapping_and_reanchor();
