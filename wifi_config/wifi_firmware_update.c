@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "pico_fota_bootloader/core.h"
+#include "pov_log.h"
 
 #ifndef POV_FIRMWARE_BOARD_ID
 #define POV_FIRMWARE_BOARD_ID "pico_w_rp2040"
@@ -39,6 +40,7 @@ static uint32_t crc32(const uint8_t *p, size_t n) {
 }
 
 static void fail(const char *message) {
+    pov_logf(POV_LOG_SOURCE_UPDATE, "failed: %s", message ? message : "unknown");
     pfb_mark_download_slot_as_invalid();
     s_update.state = WIFI_FW_FAILED;
     strncpy(s_update.message, message, sizeof(s_update.message) - 1);
@@ -46,6 +48,7 @@ static void fail(const char *message) {
 }
 
 bool wifi_fw_update_begin(uint32_t total_bytes) {
+    pov_logf(POV_LOG_SOURCE_UPDATE, "begin package bytes=%u", (unsigned)total_bytes);
     if (s_update.state == WIFI_FW_RECEIVING || s_update.state == WIFI_FW_VALIDATING) return false;
     if (total_bytes <= POVOTA_HEADER_SIZE || total_bytes > POVOTA_MAX_PAYLOAD + POVOTA_HEADER_SIZE) {
         fail("Package is empty or too large for this device."); return false;
@@ -106,6 +109,7 @@ bool wifi_fw_update_finish(void) {
     s_update.state = WIFI_FW_VALIDATING;
     if (pfb_firmware_sha256_check(s_update.payload_received) != 0) { fail("Firmware integrity check failed."); return false; }
     s_update.state = WIFI_FW_READY;
+    pov_logf(POV_LOG_SOURCE_UPDATE, "validated build=%s bytes=%u", s_update.build_id, (unsigned)s_update.payload_received);
     strcpy(s_update.message, "Firmware validated. Restarting shortly.");
     return true;
 }
@@ -116,10 +120,10 @@ bool wifi_fw_update_in_progress(void) {
     return s_update.state == WIFI_FW_RECEIVING || s_update.state == WIFI_FW_VALIDATING ||
            s_update.state == WIFI_FW_READY;
 }
-void wifi_fw_update_perform(void) { if (wifi_fw_update_ready()) { pfb_mark_download_slot_as_valid(); pfb_perform_update(); } }
+void wifi_fw_update_perform(void) { if (wifi_fw_update_ready()) { pov_logf(POV_LOG_SOURCE_UPDATE, "installing build=%s", s_update.build_id); pfb_mark_download_slot_as_valid(); pfb_perform_update(); } }
 wifi_fw_state_t wifi_fw_update_state(void) { return s_update.state; }
 const char *wifi_fw_update_message(void) { return s_update.message[0] ? s_update.message : "No update in progress."; }
 uint32_t wifi_fw_update_received(void) { return s_update.received; }
 uint32_t wifi_fw_update_expected(void) { return s_update.expected; }
 const char *wifi_fw_update_build_id(void) { return s_update.build_id; }
-void wifi_fw_update_boot_status(void) { if (pfb_is_after_rollback()) { s_update.state = WIFI_FW_ROLLED_BACK; strcpy(s_update.message, "Update rolled back; USB recovery remains available."); } else if (pfb_is_after_firmware_update()) { pfb_firmware_commit(); s_update.state = WIFI_FW_IDLE; strcpy(s_update.message, "Firmware update installed successfully."); } }
+void wifi_fw_update_boot_status(void) { if (pfb_is_after_rollback()) { s_update.state = WIFI_FW_ROLLED_BACK; strcpy(s_update.message, "Update rolled back; USB recovery remains available."); pov_logf(POV_LOG_SOURCE_UPDATE, "previous update rolled back"); } else if (pfb_is_after_firmware_update()) { pfb_firmware_commit(); s_update.state = WIFI_FW_IDLE; strcpy(s_update.message, "Firmware update installed successfully."); pov_logf(POV_LOG_SOURCE_UPDATE, "firmware update committed"); } }

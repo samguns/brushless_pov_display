@@ -14,9 +14,10 @@
 #include "wifi_http.h"
 #include "wifi_dns.h"
 #include "wifi_sta_http.h"
+#include "pov_log.h"
 
-#define WIFI_LOG_CONN(fmt, ...) printf("[wifi_conn] " fmt "\n", ##__VA_ARGS__)
-#define WIFI_LOG_BLINK(fmt, ...) printf("[wifi_blink] " fmt "\n", ##__VA_ARGS__)
+#define WIFI_LOG_CONN(fmt, ...) pov_logf(POV_LOG_SOURCE_WIFI_CONN, fmt, ##__VA_ARGS__)
+#define WIFI_LOG_BLINK(fmt, ...) pov_logf(POV_LOG_SOURCE_WIFI_CONN, fmt, ##__VA_ARGS__)
 
 #define AP_SSID     "pov-leds-setup"
 #define AP_PASS     "12345678"
@@ -44,6 +45,7 @@ typedef struct {
     char clock_text[WIFI_RUNTIME_CLOCK_TEXT_BUF_LEN];
 
     uint8_t brightness;   /* display brightness percent, 0..100 (feature 007) */
+    pov_rotation_config_t rotation_config;
 } wifi_runtime_state_t;
 
 static wifi_runtime_state_t s_runtime;
@@ -193,6 +195,11 @@ bool wifi_config_sta_runtime_init(void) {
 
     refresh_active_ip();
     s_runtime.brightness = load_brightness();
+    if (!pov_rotation_config_derive(load_nominal_rad_s_x100(),
+                                    &s_runtime.rotation_config)) {
+        (void)pov_rotation_config_derive(POV_ROTATION_DEFAULT_RAD_S_X100,
+                                         &s_runtime.rotation_config);
+    }
     wifi_sta_http_set_admin_token(s_runtime.creds.admin_token);
     wifi_sta_http_start(s_runtime.creds.ssid, s_runtime.active_ip);
 
@@ -454,4 +461,35 @@ void wifi_config_set_brightness(uint8_t brightness_pct) {
     } else {
         WIFI_LOG_CONN("brightness set %u%%", (unsigned)brightness_pct);
     }
+}
+
+pov_rotation_config_t wifi_config_get_rotation_config(void) {
+    return s_runtime.rotation_config;
+}
+
+bool wifi_config_set_nominal_rad_s_x100(uint16_t rad_s_x100) {
+    pov_rotation_config_t candidate;
+    if (!pov_rotation_config_derive(rad_s_x100, &candidate)) {
+        return false;
+    }
+    if (candidate.rad_s_x100 == s_runtime.rotation_config.rad_s_x100) {
+        return true;
+    }
+
+    s_runtime.rotation_config = candidate;
+    bool saved = save_nominal_rad_s_x100(rad_s_x100);
+    if (!saved) {
+        WIFI_LOG_CONN("rotation target persist failed rad_s=%u.%02u",
+                      (unsigned)(rad_s_x100 / 100u),
+                      (unsigned)(rad_s_x100 % 100u));
+    } else {
+        WIFI_LOG_CONN("rotation target set rad_s=%u.%02u rpm=%u period_us=%u range=%u-%u",
+                      (unsigned)(rad_s_x100 / 100u),
+                      (unsigned)(rad_s_x100 % 100u),
+                      (unsigned)candidate.nominal_rpm,
+                      (unsigned)candidate.period_us,
+                      (unsigned)candidate.min_rpm,
+                      (unsigned)candidate.max_rpm);
+    }
+    return saved;
 }

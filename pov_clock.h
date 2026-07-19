@@ -5,15 +5,20 @@
 #include <stdint.h>
 
 #include "hall_sensor.h"
+#include "pov_rotation_config.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 enum {
-    POV_CLOCK_NOMINAL_RPM = 600,
-    POV_CLOCK_MIN_RPM = 480,
-    POV_CLOCK_MAX_RPM = 800,
+    /* Default mechanical target is 40 rad/s = 381.97 RPM. Runtime settings may
+     * override it and derive the same 0.8x-to-1.333x eligibility envelope. */
+    POV_CLOCK_NOMINAL_RAD_PER_SEC = 40,
+    POV_CLOCK_NOMINAL_RPM = 382,
+    POV_CLOCK_NOMINAL_PERIOD_US = 157080,
+    POV_CLOCK_MIN_RPM = 306,
+    POV_CLOCK_MAX_RPM = 509,
     POV_CLOCK_COLUMNS = 40,
     POV_CLOCK_LED_ROWS = 57,
     POV_CLOCK_CST_OFFSET_SECONDS = 8 * 60 * 60,
@@ -61,6 +66,7 @@ typedef struct {
 } pov_clock_time_t;
 
 typedef struct {
+    pov_rotation_config_t speed_config;
     float rpm;
     uint32_t period_us;
     uint64_t phase_reference_us;

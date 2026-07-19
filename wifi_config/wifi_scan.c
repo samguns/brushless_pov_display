@@ -2,6 +2,8 @@
 
 #include <string.h>
 #include <stdio.h>
+
+#include "pov_log.h"
 #include <stdlib.h>
 
 #include "pico/cyw43_arch.h"
@@ -76,11 +78,11 @@ void wifi_scan_start(void) {
     cyw43_wifi_scan_options_t opts = {0};
     int err = cyw43_wifi_scan(&cyw43_state, &opts, NULL, scan_callback);
     if (err != 0) {
-        printf("[wifi_scan] scan start failed: %d\n", err);
+        pov_logf(POV_LOG_SOURCE_WIFI_SCAN, "scan start failed: %d\n", err);
         s_scan_active = false;
         return;
     }
-    printf("[wifi_scan] scan started\n");
+    pov_logf(POV_LOG_SOURCE_WIFI_SCAN, "scan started\n");
 }
 
 bool wifi_scan_is_active(void) {
@@ -88,7 +90,7 @@ bool wifi_scan_is_active(void) {
     if (s_scan_active && !cyw43_wifi_scan_active(&cyw43_state)) {
         s_scan_active = false;
         sort_by_rssi();
-        printf("[wifi_scan] scan complete, %d networks found\n", s_result_count);
+        pov_logf(POV_LOG_SOURCE_WIFI_SCAN, "scan complete, %d networks found\n", s_result_count);
     }
     return s_scan_active;
 }

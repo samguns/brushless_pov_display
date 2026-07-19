@@ -50,6 +50,7 @@ add_subdirectory(deps/pico_fota_bootloader)
 
 add_executable(pov_leds
         pov_leds.cpp
+        pov_log.c
         ws2812_driver.cpp
         pov_demo.cpp
         hall_sensor.cpp
@@ -64,6 +65,7 @@ add_executable(pov_leds
         wifi_config/wifi_http.c
         wifi_config/wifi_dns.c
         wifi_config/wifi_sta_web.c
+        wifi_config/wifi_log_web.c
         wifi_config/wifi_sta_http.c
         wifi_config/wifi_firmware_update.c
 )
@@ -99,8 +101,10 @@ option(POV_DEMO_DEV_USB_STDIO "Enable USB stdio for POV demo validation" ON)
 pico_enable_stdio_uart(pov_leds 0)
 if(POV_DEMO_DEV_USB_STDIO)
         pico_enable_stdio_usb(pov_leds 1)
+        target_compile_definitions(pov_leds PRIVATE POV_LOG_CONSOLE=1)
 else()
         pico_enable_stdio_usb(pov_leds 0)
+        target_compile_definitions(pov_leds PRIVATE POV_LOG_CONSOLE=0)
 endif()
 
 # Add the standard library to the build
@@ -124,6 +128,7 @@ target_link_libraries(pov_leds
         hardware_gpio
         hardware_irq
         hardware_sync
+        pico_rand
         pico_cyw43_arch_lwip_poll
         pico_fota_bootloader_lib
         )

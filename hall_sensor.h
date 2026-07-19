@@ -16,11 +16,10 @@ enum {
     HALL_DEFAULT_STOP_TIMEOUT_US = 1500000 /* 1.5 s with no edge -> stale/zero */
 };
 
-/* Supported measurement window. 60 RPM = 1 Hz (1,000,000 us per rev);
- * 6000 RPM = 100 Hz (10,000 us per rev). Values outside this window are
- * reported as bounded rather than as impossible readings. */
+/* Maximum supported capture speed. Faster edges are bounded as noise, while
+ * slower measured periods are preserved for diagnostics and the web UI. The
+ * POV renderer applies its narrower operating-speed range separately. */
 enum {
-    HALL_MIN_SUPPORTED_RPM = 60,
     HALL_MAX_SUPPORTED_RPM = 6000
 };
 
@@ -35,7 +34,7 @@ typedef struct {
     bool pull_up;             /* internal pull-up (false for push-pull output) */
     uint32_t debounce_us;     /* minimum inter-event lockout in microseconds */
     uint8_t magnets_per_rev;  /* magnet passes per revolution (>= 1) */
-    uint32_t stop_timeout_us; /* no-event timeout before speed is zeroed/stale */
+    uint32_t stop_timeout_us; /* minimum no-event timeout before stale */
 } hall_sensor_config_t;
 
 /* Interrupt-shared raw capture state. Written by the edge handler; read under a
@@ -53,7 +52,7 @@ typedef struct {
     uint32_t period_us;     /* revolution period (interval * magnets_per_rev) */
     float rpm;              /* spinning speed, revolutions per minute */
     float hz;              /* spinning speed, revolutions per second */
-    bool valid;            /* true when a fresh in-range measurement exists */
+    bool valid;            /* true when a fresh measurement exists */
     bool stale;            /* true when no edge within stop_timeout (speed = 0) */
     uint64_t last_update_us;/* timestamp when this result was computed */
     uint64_t reference_edge_us; /* latest accepted Hall edge (angular phase) */

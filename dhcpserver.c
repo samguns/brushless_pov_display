@@ -16,6 +16,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "pov_log.h"
+
 #include "lwip/udp.h"
 #include "lwip/pbuf.h"
 #include "pico/time.h"
@@ -153,7 +155,7 @@ static void dhcp_recv(void *arg, struct udp_pcb *pcb,
         if (idx < 0) goto done;
         msg.yiaddr[3] = (uint8_t)(DHCPS_BASE_IP + idx);
         opt_u8(&opt, OPT_MSG_TYPE, DHCPOFFER);
-        printf("[dhcpserver] OFFER .%d to %02x:%02x:%02x:%02x:%02x:%02x\n",
+        pov_logf(POV_LOG_SOURCE_DHCP, "OFFER .%d to %02x:%02x:%02x:%02x:%02x:%02x\n",
                msg.yiaddr[3],
                msg.chaddr[0], msg.chaddr[1], msg.chaddr[2],
                msg.chaddr[3], msg.chaddr[4], msg.chaddr[5]);
@@ -180,7 +182,7 @@ static void dhcp_recv(void *arg, struct udp_pcb *pcb,
         }
         msg.yiaddr[3] = host;
         opt_u8(&opt, OPT_MSG_TYPE, DHCPACK);
-        printf("[dhcpserver] ACK %d.%d.%d.%d\n",
+        pov_logf(POV_LOG_SOURCE_DHCP, "ACK %d.%d.%d.%d\n",
                msg.yiaddr[0], msg.yiaddr[1], msg.yiaddr[2], msg.yiaddr[3]);
         break;
     }
@@ -213,13 +215,13 @@ void dhcp_server_init(dhcp_server_t *d,
     memset(d->lease, 0, sizeof(d->lease));
 
     d->udp = udp_new();
-    if (!d->udp) { printf("[dhcpserver] udp_new failed\n"); return; }
+    if (!d->udp) { pov_logf(POV_LOG_SOURCE_DHCP, "udp_new failed\n"); return; }
 
     udp_recv(d->udp, dhcp_recv, d);
 
     err_t err = udp_bind(d->udp, IP_ANY_TYPE, PORT_DHCP_SERVER);
     if (err != ERR_OK) {
-        printf("[dhcpserver] bind failed: %d\n", (int)err);
+        pov_logf(POV_LOG_SOURCE_DHCP, "bind failed: %d\n", (int)err);
         udp_remove(d->udp); d->udp = NULL; return;
     }
 
@@ -229,7 +231,7 @@ void dhcp_server_init(dhcp_server_t *d,
         udp_bind_netif(d->udp, netif);
     }
 
-    printf("[dhcpserver] started on %s, pool .%d-.%d\n",
+    pov_logf(POV_LOG_SOURCE_DHCP, "started on %s, pool .%d-.%d\n",
            ip4addr_ntoa(ip_2_ip4(ip)),
            DHCPS_BASE_IP, DHCPS_BASE_IP + DHCPS_MAX_IP - 1);
 }

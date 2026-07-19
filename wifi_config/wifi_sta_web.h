@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "pov_rotation_config.h"
 #include "wifi_scan.h"
 
 #ifdef __cplusplus
@@ -53,6 +54,8 @@ int wifi_sta_web_build_status_page(char *buf, size_t buflen,
  * SSID + scan + password + Connect, with read-only Static IP/IP/Subnet/Gateway).
  * When `results`/`n_results` are provided, renders the selectable scan list.
  * `brightness` is the current display brightness (0..100) for the slider.
+ * `rotation_config` supplies the current rad/s value and its derived RPM,
+ * revolution period, and accepted speed range.
  * `notice`, if non-NULL/non-empty, renders a banner.
  */
 int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
@@ -61,6 +64,7 @@ int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
                                      const scan_result_t *results,
                                      int n_results,
                                      uint8_t brightness,
+                                     pov_rotation_config_t rotation_config,
                                      bool reboot_available,
                                      const char *notice);
 

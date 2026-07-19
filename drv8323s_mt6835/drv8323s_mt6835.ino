@@ -43,7 +43,7 @@ BLDCMotor motor = BLDCMotor(7);
 DRV8323Driver6PWM driver = DRV8323Driver6PWM(M0_INH_A, M0_INL_A, M0_INH_B, M0_INL_B, M0_INH_C, M0_INL_C, SPI3_CS, EN_GATE);
 
 // default velocity-mode target [rad/s]
-#define DEFAULT_TARGET_VELOCITY 70.0f
+#define DEFAULT_TARGET_VELOCITY 40.0f
 
 // instantiate the commander
 Commander command = Commander(Serial);

@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "pov_rotation_config.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -104,6 +106,11 @@ void wifi_config_set_clock_status(bool available, const char *clock_text);
  */
 uint8_t wifi_config_get_brightness(void);
 void wifi_config_set_brightness(uint8_t brightness_pct);
+
+/* Persisted POV target speed and all parameters derived from it. The setter
+ * accepts hundredths of rad/s and rejects values outside the supported range. */
+pov_rotation_config_t wifi_config_get_rotation_config(void);
+bool wifi_config_set_nominal_rad_s_x100(uint16_t rad_s_x100);
 
 #ifdef __cplusplus
 }

@@ -1,7 +1,9 @@
 #include "hall_sensor.h"
 
+#include <limits.h>
 #include <string.h>
 
+#ifndef HALL_SENSOR_DERIVE_ONLY
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/sync.h"
@@ -46,6 +48,7 @@ void hall_irq_handler(void) {
     }
 }
 }  // namespace
+#endif
 
 void hall_sensor_init_defaults(hall_sensor_config_t *config) {
     if (config == nullptr) {
@@ -59,6 +62,7 @@ void hall_sensor_init_defaults(hall_sensor_config_t *config) {
     config->stop_timeout_us = HALL_DEFAULT_STOP_TIMEOUT_US;
 }
 
+#ifndef HALL_SENSOR_DERIVE_ONLY
 bool hall_sensor_init(hall_sensor_t *sensor, const hall_sensor_config_t *config) {
     if (sensor == nullptr) {
         return false;
@@ -109,6 +113,7 @@ void hall_sensor_deinit(hall_sensor_t *sensor) {
     }
     sensor->initialized = false;
 }
+#endif
 
 hall_rotation_measurement_t hall_sensor_derive(uint32_t last_interval_us,
                                                uint64_t last_edge_us,
@@ -138,8 +143,15 @@ hall_rotation_measurement_t hall_sensor_derive(uint32_t last_interval_us,
         return m;
     }
 
-    /* Stop detection: no edge within the timeout -> zero + stale (FR-006). */
-    if ((now_us - last_edge_us) > (uint64_t)stop_timeout) {
+    /* Do not declare slow motion stopped before its next expected pulse. The
+     * configured timeout is the minimum; two observed event intervals allow
+     * one missed/late pulse while preserving the normal-speed 1.5 s behavior. */
+    uint64_t stale_after_us = (uint64_t)stop_timeout;
+    uint64_t interval_timeout_us = (uint64_t)last_interval_us * 2u;
+    if (interval_timeout_us > stale_after_us) {
+        stale_after_us = interval_timeout_us;
+    }
+    if ((now_us - last_edge_us) > stale_after_us) {
         m.stale = true;
         return m;
     }
@@ -150,14 +162,14 @@ hall_rotation_measurement_t hall_sensor_derive(uint32_t last_interval_us,
         return m;
     }
 
-    /* Bound to the supported window so out-of-range rotation yields bounded,
-     * not impossible, values (US3). */
+    /* Clamp only implausibly fast edges. Preserve slow periods so operator
+     * telemetry reports the measured speed instead of flattening it to 60 RPM.
+     * Saturate the public 32-bit period if an extreme configuration overflows. */
     const uint64_t period_min_us = HALL_US_PER_MINUTE / (uint64_t)HALL_MAX_SUPPORTED_RPM;
-    const uint64_t period_max_us = HALL_US_PER_MINUTE / (uint64_t)HALL_MIN_SUPPORTED_RPM;
     if (period < period_min_us) {
         period = period_min_us;
-    } else if (period > period_max_us) {
-        period = period_max_us;
+    } else if (period > UINT32_MAX) {
+        period = UINT32_MAX;
     }
 
     m.period_us = (uint32_t)period;
@@ -168,6 +180,7 @@ hall_rotation_measurement_t hall_sensor_derive(uint32_t last_interval_us,
     return m;
 }
 
+#ifndef HALL_SENSOR_DERIVE_ONLY
 hall_rotation_measurement_t hall_sensor_read(hall_sensor_t *sensor, uint64_t now_us) {
     hall_rotation_measurement_t empty;
     empty.period_us = 0u;
@@ -216,3 +229,4 @@ uint32_t hall_sensor_get_edge_count(const hall_sensor_t *sensor) {
     restore_interrupts(save);
     return count;
 }
+#endif

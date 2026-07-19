@@ -4,9 +4,11 @@
 
 #include "hardware/pio.h"
 #include "pico/stdlib.h"
+#include "pico/rand.h"
 
 #include "hall_sensor.h"
 #include "pov_clock.h"
+#include "pov_log.h"
 #include "pov_clock_renderer.h"
 #include "time_sync.h"
 #include "wifi_config.h"
@@ -14,17 +16,30 @@
 #include "ws2812.pio.h"
 #include "ws2812_driver.h"
 
-#define LOG_DRIVER(fmt, ...) printf("[driver] " fmt "\n", ##__VA_ARGS__)
-#define LOG_CLOCK(fmt, ...) printf("[clock] " fmt "\n", ##__VA_ARGS__)
-#define LOG_HEALTH(fmt, ...) printf("[health] " fmt "\n", ##__VA_ARGS__)
-#define LOG_HALL(fmt, ...) printf("[hall] " fmt "\n", ##__VA_ARGS__)
-#define LOG_TIME(fmt, ...) printf("[time] " fmt "\n", ##__VA_ARGS__)
+#define LOG_DRIVER(fmt, ...) pov_logf(POV_LOG_SOURCE_DRIVER, fmt, ##__VA_ARGS__)
+#define LOG_CLOCK(fmt, ...) pov_logf(POV_LOG_SOURCE_CLOCK, fmt, ##__VA_ARGS__)
+#define LOG_HEALTH(fmt, ...) pov_logf(POV_LOG_SOURCE_HEALTH, fmt, ##__VA_ARGS__)
+#define LOG_HALL(fmt, ...) pov_logf(POV_LOG_SOURCE_HALL, fmt, ##__VA_ARGS__)
+#define LOG_TIME(fmt, ...) pov_logf(POV_LOG_SOURCE_TIME, fmt, ##__VA_ARGS__)
 
 namespace {
+uint64_t log_clock_ms() { return time_us_64() / 1000u; }
+uint32_t rad_s_x100_from_period(uint32_t period_us) {
+    // 2*pi radians/revolution * 1,000,000 us/s * 100 centiradians/radian.
+    constexpr uint64_t kTwoPiUsX100 = 628318531ULL;
+    return period_us == 0u
+               ? 0u
+               : (uint32_t)((kTwoPiUsX100 + period_us / 2u) / period_us);
+}
 constexpr uint8_t kRequestedLedCount = POV_LED_MAX_COUNT;
 constexpr uint kDefaultDataPin = 2;
 constexpr uint32_t kHallLogIntervalMs = 1000;
 constexpr uint32_t kStatusFrameIntervalMs = 500;
+// Temporary bring-up bypass: render against the configured nominal clock
+// instead of accepting/rejecting rotation from the low-rate HAL250SO. Set false
+// after installing a Hall sensor fast enough to capture every magnet pass.
+// Hall measurement, web RPM publication, and diagnostic logging remain active.
+constexpr bool kAssumeFixedRotation = true;
 constexpr const char *kTimeServer = "ntp.tencent.com";
 
 // Bench test mode: when true, ignore the POV clock/status logic and light every
@@ -37,10 +52,14 @@ constexpr uint32_t kStaticTestColor = (32u << 16) | (32u << 8) | 32u;
 
 int main() {
     stdio_init_all();
+    pov_log_init(get_rand_64(), log_clock_ms);
+    pov_logf(POV_LOG_SOURCE_SYSTEM, "boot log initialized");
 
+#if POV_LOG_CONSOLE
     for (int i = 0; i < 30 && !stdio_usb_connected(); ++i) {
         sleep_ms(100);
     }
+#endif
 
     wifi_config_init();
     if (!wifi_config_sta_runtime_init()) {
@@ -82,19 +101,23 @@ int main() {
 
     uint8_t brightness_pct = wifi_config_get_brightness();
     ws2812_driver_set_brightness(&driver, (uint8_t)((brightness_pct * 255u) / 100u));
+    pov_rotation_config_t active_rotation_config =
+        wifi_config_get_rotation_config();
 
     hall_sensor_t hall;
     hall_sensor_config_t hall_cfg;
     hall_sensor_init_defaults(&hall_cfg);
     bool hall_ok = hall_sensor_init(&hall, &hall_cfg);
     if (hall_ok) {
-        LOG_HALL("ready pin=%u magnets=%u stop_timeout_ms=%u nominal=%u rpm range=%u-%u rpm",
+        LOG_HALL("ready pin=%u magnets=%u stop_timeout_ms=%u nominal=%u.%02u rad/s target=%u rpm range=%u-%u rpm",
                  (unsigned)hall_cfg.pin,
                  (unsigned)hall_cfg.magnets_per_rev,
                  (unsigned)(hall_cfg.stop_timeout_us / 1000u),
-                 (unsigned)POV_CLOCK_NOMINAL_RPM,
-                 (unsigned)POV_CLOCK_MIN_RPM,
-                 (unsigned)POV_CLOCK_MAX_RPM);
+                 (unsigned)(active_rotation_config.rad_s_x100 / 100u),
+                 (unsigned)(active_rotation_config.rad_s_x100 % 100u),
+                 (unsigned)active_rotation_config.nominal_rpm,
+                 (unsigned)active_rotation_config.min_rpm,
+                 (unsigned)active_rotation_config.max_rpm);
     } else {
         LOG_HALL("init failed pin=%u", (unsigned)hall_cfg.pin);
     }
@@ -110,6 +133,10 @@ int main() {
 
     pov_clock_rotation_t rotation;
     pov_clock_rotation_init(&rotation);
+    rotation.speed_config = active_rotation_config;
+    pov_clock_rotation_t hall_rotation;
+    pov_clock_rotation_init(&hall_rotation);
+    hall_rotation.speed_config = active_rotation_config;
 
     pov_clock_renderer_t renderer;
     pov_clock_renderer_init(&renderer);
@@ -135,6 +162,25 @@ int main() {
 
     while (true) {
         wifi_config_runtime_step();
+
+        pov_rotation_config_t current_rotation_config =
+            wifi_config_get_rotation_config();
+        if (current_rotation_config.rad_s_x100 !=
+            active_rotation_config.rad_s_x100) {
+            active_rotation_config = current_rotation_config;
+            rotation.speed_config = active_rotation_config;
+            hall_rotation.speed_config = active_rotation_config;
+            rotation.fresh = false;
+            renderer.phase_locked = false;
+            status_frame_dirty = true;
+            LOG_CLOCK("rotation target rad_s=%u.%02u rpm=%u range=%u-%u period_us=%u",
+                      (unsigned)(active_rotation_config.rad_s_x100 / 100u),
+                      (unsigned)(active_rotation_config.rad_s_x100 % 100u),
+                      (unsigned)active_rotation_config.nominal_rpm,
+                      (unsigned)active_rotation_config.min_rpm,
+                      (unsigned)active_rotation_config.max_rpm,
+                      (unsigned)active_rotation_config.period_us);
+        }
 
         uint8_t cur_brightness_pct = wifi_config_get_brightness();
         if (cur_brightness_pct != last_brightness_pct) {
@@ -176,6 +222,18 @@ int main() {
             LOG_CLOCK("tick %s", clock_time.text);
         }
 
+        if (kAssumeFixedRotation) {
+            if (!rotation.fresh) {
+                rotation.phase_reference_us = now_us;
+            }
+            rotation.rpm = (float)active_rotation_config.nominal_rpm;
+            rotation.period_us = active_rotation_config.period_us;
+            rotation.fresh = true;
+            rotation.within_range = true;
+            rotation.stable = true;
+            rotation.status = POV_CLOCK_ROTATION_SUITABLE;
+        }
+
         if (hall_ok) {
             hall_rotation_measurement_t measurement = hall_sensor_read(&hall, now_us);
             if (measurement.valid && !measurement.stale) {
@@ -184,25 +242,39 @@ int main() {
             } else if (rotation_speed_available && measurement.stale) {
                 rotation_speed_rpm = 0u;
             }
-            pov_clock_rotation_status_t status = pov_clock_rotation_update(&rotation, &measurement);
+            pov_clock_rotation_status_t status =
+                pov_clock_rotation_update(&hall_rotation, &measurement);
+            uint32_t hall_rad_s_x100 =
+                rad_s_x100_from_period(hall_rotation.period_us);
             if (status != last_rotation_status) {
                 last_rotation_status = status;
                 status_frame_dirty = true;
-                LOG_HALL("suitability=%s rpm=%d period_us=%u",
+                LOG_HALL("suitability=%s rpm=%d rad_s=%u.%02u period_us=%u",
                          pov_clock_rotation_status_text(status),
-                         (int)(rotation.rpm + 0.5f),
-                         (unsigned)rotation.period_us);
+                         (int)(hall_rotation.rpm + 0.5f),
+                         (unsigned)(hall_rad_s_x100 / 100u),
+                         (unsigned)(hall_rad_s_x100 % 100u),
+                         (unsigned)hall_rotation.period_us);
             }
 
-            if (rotation.fresh && (now_ms - hall_last_log_ms) >= kHallLogIntervalMs) {
+            if (hall_rotation.fresh &&
+                (now_ms - hall_last_log_ms) >= kHallLogIntervalMs) {
                 hall_last_log_ms = now_ms;
-                LOG_HALL("speed rpm=%d target=%u range=%u-%u period_us=%u",
-                         (int)(rotation.rpm + 0.5f),
-                         (unsigned)POV_CLOCK_NOMINAL_RPM,
-                         (unsigned)POV_CLOCK_MIN_RPM,
-                         (unsigned)POV_CLOCK_MAX_RPM,
-                         (unsigned)rotation.period_us);
+                LOG_HALL("speed rpm=%d rad_s=%u.%02u target_rpm=%u target_rad_s=%u.%02u range=%u-%u period_us=%u",
+                         (int)(hall_rotation.rpm + 0.5f),
+                         (unsigned)(hall_rad_s_x100 / 100u),
+                         (unsigned)(hall_rad_s_x100 % 100u),
+                         (unsigned)active_rotation_config.nominal_rpm,
+                         (unsigned)(active_rotation_config.rad_s_x100 / 100u),
+                         (unsigned)(active_rotation_config.rad_s_x100 % 100u),
+                         (unsigned)active_rotation_config.min_rpm,
+                         (unsigned)active_rotation_config.max_rpm,
+                         (unsigned)hall_rotation.period_us);
             }
+        }
+
+        if (!kAssumeFixedRotation) {
+            rotation = hall_rotation;
         }
 
         pov_clock_health_t health = pov_clock_derive_health(&clock_time, &rotation);

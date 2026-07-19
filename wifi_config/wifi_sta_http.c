@@ -2,6 +2,8 @@
 
 #include <string.h>
 #include <stdio.h>
+
+#include "pov_log.h"
 #include <stdlib.h>
 
 #include "pico/stdlib.h"
@@ -11,6 +13,7 @@
 #include "lwip/tcp.h"
 
 #include "wifi_sta_web.h"
+#include "wifi_log_web.h"
 #include "wifi_config.h"
 #include "wifi_scan.h"
 #include "wifi_firmware_update.h"
@@ -100,6 +103,117 @@ static int hex_value(char c) {
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
+}
+
+static bool parse_decimal_u32(const char *text, uint32_t *value) {
+    if (!text || !text[0]) return false;
+    uint64_t n = 0u;
+    for (const char *p = text; *p; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        n = n * 10u + (uint64_t)(*p - '0');
+        if (n > UINT32_MAX) return false;
+    }
+    *value = (uint32_t)n;
+    return true;
+}
+
+/* Parse a strict fixed-point rad/s value with at most two decimal places. */
+static bool parse_rad_s_x100(const char *text, uint16_t *value) {
+    if (!text || !text[0] || !value) return false;
+
+    uint32_t whole = 0u;
+    uint32_t fraction = 0u;
+    unsigned whole_digits = 0u;
+    unsigned fraction_digits = 0u;
+    bool seen_dot = false;
+    for (const char *p = text; *p; ++p) {
+        if (*p == '.') {
+            if (seen_dot) return false;
+            seen_dot = true;
+            continue;
+        }
+        if (*p < '0' || *p > '9') return false;
+        if (!seen_dot) {
+            whole_digits++;
+            whole = whole * 10u + (uint32_t)(*p - '0');
+            if (whole > POV_ROTATION_MAX_RAD_S_X100 / 100u) return false;
+        } else {
+            if (fraction_digits >= 2u) return false;
+            fraction = fraction * 10u + (uint32_t)(*p - '0');
+            fraction_digits++;
+        }
+    }
+    if (whole_digits == 0u || (seen_dot && fraction_digits == 0u)) return false;
+    if (fraction_digits == 1u) fraction *= 10u;
+
+    uint32_t fixed = whole * 100u + fraction;
+    if (fixed < POV_ROTATION_MIN_RAD_S_X100 ||
+        fixed > POV_ROTATION_MAX_RAD_S_X100) {
+        return false;
+    }
+    *value = (uint16_t)fixed;
+    return true;
+}
+
+static bool parse_session_hex(const char *text, uint64_t *value) {
+    if (!text || strlen(text) != 16u) return false;
+    uint64_t n = 0u;
+    for (unsigned i = 0; i < 16u; ++i) {
+        int digit = hex_value(text[i]);
+        if (digit < 0) return false;
+        n = (n << 4u) | (uint64_t)digit;
+    }
+    *value = n;
+    return true;
+}
+
+static bool parse_log_query(const char *request, bool *has_session,
+                            uint64_t *session, uint32_t *after,
+                            uint8_t *limit) {
+    const char *start = request + 4;
+    const char *end = strchr(start, ' ');
+    if (!end || (size_t)(end - start) >= 192u) return false;
+    char target[192];
+    memcpy(target, start, (size_t)(end - start));
+    target[end - start] = '\0';
+    if (strncmp(target, "/logs/updates", 13u) != 0 ||
+        (target[13] != '\0' && target[13] != '?')) return false;
+
+    *has_session = false;
+    *session = 0u;
+    *after = 0u;
+    *limit = WIFI_LOG_BATCH_MAX;
+    bool seen_after = false, seen_limit = false;
+    char *query = strchr(target, '?');
+    if (!query) return true;
+    ++query;
+    if (!query[0]) return false;
+
+    for (char *part = query; part && *part; ) {
+        char *next = strchr(part, '&');
+        if (next) *next++ = '\0';
+        char *equals = strchr(part, '=');
+        if (!equals || equals == part) return false;
+        *equals++ = '\0';
+        if (strcmp(part, "session") == 0) {
+            if (*has_session || !parse_session_hex(equals, session)) return false;
+            *has_session = true;
+        } else if (strcmp(part, "after") == 0) {
+            if (seen_after || !parse_decimal_u32(equals, after)) return false;
+            seen_after = true;
+        } else if (strcmp(part, "limit") == 0) {
+            uint32_t parsed = 0u;
+            if (seen_limit || !parse_decimal_u32(equals, &parsed) ||
+                parsed > WIFI_LOG_BATCH_MAX) return false;
+            *limit = (uint8_t)parsed;
+            seen_limit = true;
+        } else {
+            /* Unknown query parameters are ignored by the read-only contract. */
+            (void)equals;
+        }
+        part = next;
+    }
+    return true;
 }
 
 /* URL-decode `in` into `out` (handles '+' as space and %XX escapes). */
@@ -250,6 +364,9 @@ static void start_send(struct tcp_pcb *pcb, int status_code,
     int hdr_len = snprintf(s_hdr_buf, sizeof(s_hdr_buf),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
+        "Content-Length: %d\r\n"
+        "Cache-Control: no-store\r\n"
+        "X-Content-Type-Options: nosniff\r\n"
         "Connection: close\r\n"
         "\r\n",
         status_code, status_text, content_type, body_len);
@@ -257,7 +374,7 @@ static void start_send(struct tcp_pcb *pcb, int status_code,
     err_t herr = tcp_write(pcb, s_hdr_buf, (u16_t)hdr_len,
                            TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
     if (herr != ERR_OK) {
-        printf("[wifi_sta_http] header write failed: %d\n", (int)herr);
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "header write failed: %d\n", (int)herr);
         release_client(pcb, true);
         return;
     }
@@ -351,7 +468,7 @@ static void on_client_err(void *arg, err_t err) {
      * opens extra parallel/preconnect sockets we don't keep. lwIP has already
      * freed this pcb; only flag genuinely unexpected errors. */
     if (err != ERR_ABRT && err != ERR_RST && err != ERR_CLSD) {
-        printf("[wifi_sta_http] client error %d\n", (int)err);
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "client error %d\n", (int)err);
     }
     clear_client_state(NULL);
     if (s_ota_upload) { wifi_fw_update_abort("Upload interrupted."); s_ota_upload = false; }
@@ -436,7 +553,35 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         }
     }
 
-    if (strncmp(s_req_buf, "GET /ota/status", 15) == 0) {
+    if (strncmp(s_req_buf, "GET /logs/updates", 17) == 0) {
+        bool has_session = false;
+        uint64_t session = 0u;
+        uint32_t after = 0u;
+        uint8_t limit = WIFI_LOG_BATCH_MAX;
+        if (!parse_log_query(s_req_buf, &has_session, &session, &after, &limit)) {
+            strcpy(s_page_buf, "{\"error\":\"invalid query\"}");
+            send_json_response(pcb, 400, "Bad Request", s_page_buf);
+        } else {
+            int json_len = wifi_log_web_build_updates(
+                s_page_buf, sizeof(s_page_buf), has_session, session, after, limit);
+            if (json_len == WIFI_LOG_JSON_INVALID_CURSOR) {
+                strcpy(s_page_buf, "{\"error\":\"invalid log cursor\"}");
+                send_json_response(pcb, 400, "Bad Request", s_page_buf);
+            } else if (json_len < 0) {
+                strcpy(s_page_buf, "{\"error\":\"response too large\"}");
+                send_json_response(pcb, 500, "Internal Server Error", s_page_buf);
+            } else {
+                send_json_response(pcb, 200, "OK", s_page_buf);
+            }
+        }
+        s_req_len = 0;
+    } else if (strncmp(s_req_buf, "GET /logs ", 10) == 0) {
+        int page_len = wifi_log_web_build_page(s_page_buf, sizeof(s_page_buf));
+        send_response(pcb, page_len >= 0 ? 200 : 500,
+                      page_len >= 0 ? "OK" : "Internal Server Error",
+                      s_page_buf, page_len > 0 ? page_len : 0);
+        s_req_len = 0;
+    } else if (strncmp(s_req_buf, "GET /ota/status", 15) == 0) {
         send_ota_status(pcb, 200, wifi_fw_update_message()); s_req_len = 0;
     } else if (strncmp(s_req_buf, "GET /ota", 8) == 0) {
         int page_len = wifi_sta_web_build_ota_page(s_page_buf, sizeof(s_page_buf));
@@ -468,11 +613,12 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         if (slen == 0 || slen > WIFI_SSID_MAX_LEN || plen < 8 || plen > WIFI_PASS_MAX_LEN) {
             int page_len = wifi_sta_web_build_settings_page(
                 s_page_buf, sizeof(s_page_buf), s_ssid, s_ip, NULL, 0,
-                (uint8_t)wifi_config_get_brightness(), reboot_is_available(), "Invalid input: SSID must be 1-32 characters and the WPA2 "
+                (uint8_t)wifi_config_get_brightness(),
+                wifi_config_get_rotation_config(), reboot_is_available(), "Invalid input: SSID must be 1-32 characters and the WPA2 "
                 "password 8-63 characters.");
             send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
             s_req_len = 0;
-            printf("[wifi_sta_http] reconfig rejected (ssid_len=%u pw_len=%u)\n",
+            pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "reconfig rejected (ssid_len=%u pw_len=%u)\n",
                    (unsigned)slen, (unsigned)plen);
             return ERR_OK;
         }
@@ -489,7 +635,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
             s_page_buf, sizeof(s_page_buf), s_pending_ssid);
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
-        printf("[wifi_sta_http] reconfig accepted target SSID=%s (pw_len=%u)\n",
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "reconfig accepted target SSID=%s (pw_len=%u)\n",
                s_pending_ssid, (unsigned)plen);
     } else if (strncmp(s_req_buf, "POST /display", 13) == 0) {
         /* Display brightness change (feature 007). Open endpoint, consistent
@@ -500,13 +646,41 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         if (br < 0) br = 0;
         if (br > 100) br = 100;
         wifi_config_set_brightness((uint8_t)br);
-        printf("[wifi_sta_http] brightness set to %d%%\n", br);
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "brightness set to %d%%\n", br);
 
         int page_len = wifi_sta_web_build_settings_page(
             s_page_buf, sizeof(s_page_buf), s_ssid, s_ip, NULL, 0,
-            (uint8_t)wifi_config_get_brightness(), reboot_is_available(), "Brightness updated.");
+            (uint8_t)wifi_config_get_brightness(),
+            wifi_config_get_rotation_config(), reboot_is_available(), "Brightness updated.");
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
+    } else if (strncmp(s_req_buf, "POST /rotation ", 15) == 0) {
+        char rad_s_raw[16] = {0};
+        uint16_t rad_s_x100 = 0u;
+        extract_form_field(body, "rad_s", rad_s_raw, sizeof(rad_s_raw));
+        bool valid = parse_rad_s_x100(rad_s_raw, &rad_s_x100);
+        bool persisted = valid &&
+                         wifi_config_set_nominal_rad_s_x100(rad_s_x100);
+        const char *notice = !valid
+            ? "Invalid angular speed: enter 0.50-100.00 rad/s."
+            : (persisted ? "Rotation target updated."
+                         : "Rotation target applied, but persistence failed.");
+
+        int page_len = wifi_sta_web_build_settings_page(
+            s_page_buf, sizeof(s_page_buf), s_ssid, s_ip, NULL, 0,
+            (uint8_t)wifi_config_get_brightness(),
+            wifi_config_get_rotation_config(), reboot_is_available(), notice);
+        send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
+        s_req_len = 0;
+        if (valid) {
+            pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP,
+                     "rotation target request rad_s=%u.%02u persisted=%d\n",
+                     (unsigned)(rad_s_x100 / 100u),
+                     (unsigned)(rad_s_x100 % 100u), (int)persisted);
+        } else {
+            pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP,
+                     "rotation target rejected value=%s\n", rad_s_raw);
+        }
     } else if (strncmp(s_req_buf, "GET /wifi", 9) == 0 ||
                strncmp(s_req_buf, "GET /settings", 13) == 0) {
         bool do_scan = (strstr(s_req_buf, "scan=1") != NULL);
@@ -525,13 +699,14 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
             if (n_results <= 0 && notice == NULL) {
                 notice = "No networks found. Enter the SSID manually.";
             }
-            printf("[wifi_sta_http] reconfig scan results=%d\n", n_results);
+            pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "reconfig scan results=%d\n", n_results);
         }
 
         int page_len = wifi_sta_web_build_settings_page(
             s_page_buf, sizeof(s_page_buf), s_ssid, s_ip,
             do_scan ? results : NULL, do_scan ? n_results : 0,
-            (uint8_t)wifi_config_get_brightness(), reboot_is_available(), notice);
+            (uint8_t)wifi_config_get_brightness(),
+            wifi_config_get_rotation_config(), reboot_is_available(), notice);
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
     } else if (strncmp(s_req_buf, "POST /reboot ", 13) == 0) {
@@ -542,7 +717,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
             int page_len = wifi_sta_web_build_restart_accepted_page(s_page_buf, sizeof(s_page_buf));
             send_response(pcb, 202, "Accepted", s_page_buf, page_len > 0 ? page_len : 0);
             s_reboot_target = REBOOT_NORMAL;
-            printf("[wifi_sta_http] normal reboot accepted\n");
+            pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "normal reboot accepted\n");
         }
         s_req_len = 0;
     } else if (strncmp(s_req_buf, "GET /reboot ", 12) == 0) {
@@ -565,7 +740,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         send_response(pcb, 200, "OK", s_page_buf, page_len > 0 ? page_len : 0);
         s_req_len = 0;
         s_reboot_target = REBOOT_USB_BOOTSEL;
-        printf("[wifi_sta_http] firmware update confirmed\n");
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "firmware update confirmed\n");
     } else if (strncmp(s_req_buf, "GET /update", 11) == 0) {
         /* Confirmation page with 60 s countdown (FR-009) */
         int page_len = wifi_sta_web_build_update_page(
@@ -598,7 +773,7 @@ static err_t on_poll(void *arg, struct tcp_pcb *pcb) {
     if (pcb != s_client_pcb) return ERR_OK;
 
     if (client_timed_out()) {
-        printf("[wifi_sta_http] client timeout (req_len=%u tx=%u sent=%u/%u)\n",
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "client timeout (req_len=%u tx=%u sent=%u/%u)\n",
                (unsigned)s_req_len,
                (unsigned)s_tx_active,
                (unsigned)s_tx_sent,
@@ -618,7 +793,7 @@ static err_t on_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
     /* Single client at a time; a second concurrent request is aborted. */
     if (s_client_pcb) {
         if (client_timed_out()) {
-            printf("[wifi_sta_http] replacing stale client\n");
+            pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "replacing stale client\n");
             release_client(s_client_pcb, true);
         } else {
             tcp_abort(client_pcb);
@@ -657,13 +832,13 @@ void wifi_sta_http_start(const char *ssid, const char *ip) {
 
     s_listen_pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!s_listen_pcb) {
-        printf("[wifi_sta_http] failed to create PCB\n");
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "failed to create PCB\n");
         return;
     }
     tcp_bind(s_listen_pcb, IP_ANY_TYPE, HTTP_PORT);
     s_listen_pcb = tcp_listen_with_backlog(s_listen_pcb, 1);
     tcp_accept(s_listen_pcb, on_accept);
-    printf("[wifi_sta_http] management portal listening on port %d\n", HTTP_PORT);
+    pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "management portal listening on port %d\n", HTTP_PORT);
 }
 
 void wifi_sta_http_stop(void) {
@@ -703,12 +878,12 @@ void wifi_sta_http_poll(void) {
     }
 
     if (s_reboot_target == REBOOT_NORMAL) {
-        printf("[wifi_sta_http] watchdog rebooting normally\n");
+        pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "watchdog rebooting normally\n");
         watchdog_reboot(0, 0, 1);
         while (true) tight_loop_contents();
     }
 
-    printf("[wifi_sta_http] reset_usb_boot() - rebooting to USB MSD\n");
+    pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "reset_usb_boot() - rebooting to USB MSD\n");
     sleep_ms(50);
     reset_usb_boot(0, 0);
 }
@@ -742,7 +917,7 @@ void wifi_sta_http_set_runtime_status(const char *connectivity_state,
 void wifi_sta_http_set_admin_token(const char *token) {
     strncpy(s_admin_token, token ? token : "", sizeof(s_admin_token) - 1);
     s_admin_token[sizeof(s_admin_token) - 1] = '\0';
-    printf("[wifi_sta_http] admin token configured (len=%u)\n",
+    pov_logf(POV_LOG_SOURCE_WIFI_STA_HTTP, "admin token configured (len=%u)\n",
            (unsigned)strlen(s_admin_token));
 }
 

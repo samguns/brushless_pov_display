@@ -76,6 +76,8 @@ void pov_clock_rotation_init(pov_clock_rotation_t *rotation) {
         return;
     }
     memset(rotation, 0, sizeof(*rotation));
+    (void)pov_rotation_config_derive(POV_ROTATION_DEFAULT_RAD_S_X100,
+                                     &rotation->speed_config);
     rotation->status = POV_CLOCK_ROTATION_UNAVAILABLE;
 }
 
@@ -168,13 +170,14 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
     rotation->rpm = (eff_period > 0u)
                         ? (float)HALL_US_PER_MINUTE / (float)eff_period
                         : 0.0f;
-    rotation->within_range = rotation->rpm >= (float)POV_CLOCK_MIN_RPM &&
-                             rotation->rpm <= (float)POV_CLOCK_MAX_RPM;
+    rotation->within_range =
+        rotation->rpm >= (float)rotation->speed_config.min_rpm &&
+        rotation->rpm <= (float)rotation->speed_config.max_rpm;
 
     bool confident = rotation->hist_count >= (uint8_t)POV_CLOCK_SPEED_MIN_SAMPLES;
-    if (rotation->rpm < (float)POV_CLOCK_MIN_RPM) {
+    if (rotation->rpm < (float)rotation->speed_config.min_rpm) {
         rotation->status = POV_CLOCK_ROTATION_TOO_SLOW;
-    } else if (rotation->rpm > (float)POV_CLOCK_MAX_RPM) {
+    } else if (rotation->rpm > (float)rotation->speed_config.max_rpm) {
         rotation->status = POV_CLOCK_ROTATION_TOO_FAST;
     } else if (!confident || !rotation->stable) {
         rotation->status = POV_CLOCK_ROTATION_UNSTABLE;

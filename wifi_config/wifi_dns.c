@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "pov_log.h"
+
 #include "lwip/udp.h"
 #include "lwip/ip_addr.h"
 
@@ -109,18 +111,18 @@ static void dns_recv(void *arg, struct udp_pcb *pcb,
 void wifi_dns_start(void) {
     s_dns_pcb = udp_new();
     if (!s_dns_pcb) {
-        printf("[wifi_dns] failed to allocate PCB\n");
+        pov_logf(POV_LOG_SOURCE_WIFI_DNS, "failed to allocate PCB\n");
         return;
     }
     udp_recv(s_dns_pcb, dns_recv, NULL);
     err_t err = udp_bind(s_dns_pcb, IP_ANY_TYPE, DNS_PORT);
     if (err != ERR_OK) {
-        printf("[wifi_dns] bind to port 53 failed: %d\n", (int)err);
+        pov_logf(POV_LOG_SOURCE_WIFI_DNS, "bind to port 53 failed: %d\n", (int)err);
         udp_remove(s_dns_pcb);
         s_dns_pcb = NULL;
         return;
     }
-    printf("[wifi_dns] captive portal DNS listening on port 53\n");
+    pov_logf(POV_LOG_SOURCE_WIFI_DNS, "captive portal DNS listening on port 53\n");
 }
 
 void wifi_dns_stop(void) {

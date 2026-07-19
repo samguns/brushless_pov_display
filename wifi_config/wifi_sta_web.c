@@ -169,6 +169,7 @@ static int shell_open(char *buf, size_t buflen, size_t off_in,
     size_t off = off_in;
     bool ov = (active && strcmp(active, "overview") == 0);
     bool se = (active && strcmp(active, "settings") == 0);
+    bool lo = (active && strcmp(active, "logs") == 0);
 
     STA_APPEND(
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -186,12 +187,13 @@ static int shell_open(char *buf, size_t buflen, size_t off_in,
         "<a class=\"%s\" href=\"/\">" SVG_GRID "Overview</a>"
         "<div class=\"sec\">System</div>"
         "<a class=\"%s\" href=\"/settings\">" SVG_GEAR "Settings</a>"
+        "<a class=\"%s\" href=\"/logs\">" SVG_GRID "Logs</a>"
         "</nav>"
         "<div class=\"userbox\"><span class=\"avatar\">PD</span>"
         "<div style=\"flex:1;min-width:0\"><div class=\"nm\">POV Display</div>"
         "<div class=\"em\">device portal</div></div></div>"
         "</div>",
-        ov ? "active" : "", se ? "active" : "");
+        ov ? "active" : "", se ? "active" : "", lo ? "active" : "");
 
     /* Main + topbar */
     STA_APPEND(
@@ -277,6 +279,7 @@ int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
                                      const scan_result_t *results,
                                      int n_results,
                                      uint8_t brightness,
+                                     pov_rotation_config_t rotation_config,
                                      bool reboot_available,
                                      const char *notice) {
     int r = shell_open(buf, buflen, 0, "Settings", "settings");
@@ -328,9 +331,26 @@ int wifi_sta_web_build_settings_page(char *buf, size_t buflen,
         "value=\"%u\" oninput=\"bv.value=this.value+'%%'\">"
         "<output id=\"bv\">%u%%</output>"
         "<button class=\"btn primary\" type=\"submit\">Set</button>"
-        "</div></form>"
-        "</div>",
+        "</div></form>",
         (unsigned)brightness, (unsigned)brightness);
+
+    STA_APPEND(
+        "<form class=\"row col2\" action=\"/rotation\" method=\"POST\">"
+        "<div class=\"lbl\">Nominal angular speed</div>"
+        "<div class=\"desc\">Set the assumed POV rotation rate in rad/s. "
+        "RPM, revolution period, and acceptance range are derived automatically.</div>"
+        "<div class=\"bright\">"
+        "<input class=\"field\" type=\"number\" name=\"rad_s\" "
+        "min=\"0.50\" max=\"100.00\" step=\"0.01\" value=\"%u.%02u\" required>"
+        "<output>%u RPM, %u us/rev, range %u-%u RPM</output>"
+        "<button class=\"btn primary\" type=\"submit\">Set</button>"
+        "</div></form></div>",
+        (unsigned)(rotation_config.rad_s_x100 / 100u),
+        (unsigned)(rotation_config.rad_s_x100 % 100u),
+        (unsigned)rotation_config.nominal_rpm,
+        (unsigned)rotation_config.period_us,
+        (unsigned)rotation_config.min_rpm,
+        (unsigned)rotation_config.max_rpm);
 
     /* System card */
     STA_APPEND(
@@ -503,18 +523,20 @@ int wifi_sta_web_build_ota_page(char *buf, size_t buflen) {
     int r = shell_open(buf, buflen, 0, "WiFi OTA", "settings");
     if (r < 0) return -1;
     size_t off = (size_t)r;
+    /* STA_APPEND uses snprintf; write every literal percent below as %%. */
     STA_APPEND("<div><h1>Update Firmware (WIFI)</h1><p class=\"sub\">Secure local update · compatible .povota package</p></div>"
         "<div class=\"warn\"><p><strong>Restart required.</strong> A validated update briefly pauses display and network availability.</p>"
         "<p>Need recovery or first-time migration? Use <a href=\"/update\">Update Firmware (USB)</a>.</p></div>"
         "<div class=\"card\" style=\"max-width:620px;padding:24px\"><div class=\"k\">Firmware package</div>"
         "<input id=\"f\" class=\"field\" type=\"file\" accept=\".povota\" style=\"margin:12px 0\">"
-        "<div style=\"display:flex;justify-content:space-between;align-items:center;margin:16px 0 7px\"><span id=\"stage\" class=\"lbl\">Ready to upload</span><b id=\"pct\" class=\"val\">0%</b></div>"
-        "<div style=\"height:10px;background:var(--inset);border-radius:99px;overflow:hidden;border:1px solid var(--border)\"><div id=\"bar\" style=\"height:100%;width:0%;background:var(--accent);transition:width .25s ease\"></div></div>"
+        "<div style=\"display:flex;justify-content:space-between;align-items:center;margin:16px 0 7px\"><span id=\"stage\" class=\"lbl\">Ready to upload</span><b id=\"pct\" class=\"val\">0%%</b></div>"
+        "<div style=\"height:10px;background:var(--inset);border-radius:99px;overflow:hidden;border:1px solid var(--border)\"><div id=\"bar\" style=\"height:100%%;width:0%%;background:var(--accent);transition:width .25s ease\"></div></div>"
         "<p id=\"s\" class=\"desc\" style=\"min-height:20px;margin:10px 0 18px\">Choose a package to begin.</p>"
-        "<button id=\"u\" class=\"btn danger\" type=\"button\" onclick=\"ota()\">Start WiFi update</button></div>"
-        "<script>function show(x){var e=+x.expected_bytes||0,r=+x.received_bytes||0,p=e?Math.min(100,Math.round(r*100/e)):0;bar.style.width=p+'%';pct.textContent=p+'%';stage.textContent=x.state==='ready'?'Restarting':x.state==='validating'?'Validating package':p?'Uploading firmware':'Ready to upload';s.textContent=x.message+(e?' · '+r+' / '+e+' bytes':'');if(x.state==='ready'||x.state==='failed')u.disabled=x.state==='ready';}"
+        "<button id=\"u\" class=\"btn danger\" type=\"button\">Start WiFi update</button></div>"
+        "<script>const f=document.getElementById('f'),stage=document.getElementById('stage'),pct=document.getElementById('pct'),bar=document.getElementById('bar'),s=document.getElementById('s'),u=document.getElementById('u');"
+        "function show(x){var e=+x.expected_bytes||0,r=+x.received_bytes||0,p=e?Math.min(100,Math.round(r*100/e)):0;bar.style.width=p+'%%';pct.textContent=p+'%%';stage.textContent=x.state==='ready'?'Restarting':x.state==='validating'?'Validating package':p?'Uploading firmware':'Ready to upload';s.textContent=x.message+(e?' - '+r+' / '+e+' bytes':'');if(x.state==='ready'||x.state==='failed')u.disabled=x.state==='ready';}"
         "function st(){fetch('/ota/status').then(r=>r.json()).then(show).catch(()=>{});}"
-        "function ota(){var x=f.files[0];if(!x){s.textContent='Choose a .povota package.';return;}u.disabled=true;stage.textContent='Uploading firmware';s.textContent='Preparing upload…';var q=new XMLHttpRequest();q.open('POST','/ota');q.setRequestHeader('Content-Type','application/octet-stream');q.upload.onprogress=function(e){if(e.lengthComputable){var p=Math.round(e.loaded*100/e.total);bar.style.width=p+'%';pct.textContent=p+'%';s.textContent='Uploading firmware · '+e.loaded+' / '+e.total+' bytes';}};q.onload=function(){try{show(JSON.parse(q.responseText));}catch(e){s.textContent='Upload failed. USB recovery remains available.';u.disabled=false;}st();};q.onerror=function(){s.textContent='Upload interrupted. USB recovery remains available.';u.disabled=false;};q.send(x);}setInterval(st,2000);st();</script>");
+        "function startOta(){var x=f.files[0];if(!x){s.textContent='Choose a .povota package.';return;}u.disabled=true;stage.textContent='Uploading firmware';s.textContent='Preparing upload...';var q=new XMLHttpRequest();q.open('POST','/ota');q.setRequestHeader('Content-Type','application/octet-stream');q.upload.onprogress=function(e){if(e.lengthComputable){var p=Math.round(e.loaded*100/e.total);bar.style.width=p+'%%';pct.textContent=p+'%%';s.textContent='Uploading firmware - '+e.loaded+' / '+e.total+' bytes';}};q.onload=function(){try{show(JSON.parse(q.responseText));}catch(e){s.textContent='Upload failed. USB recovery remains available.';u.disabled=false;}st();};q.onerror=function(){s.textContent='Upload interrupted. USB recovery remains available.';u.disabled=false;};q.send(x);}u.addEventListener('click',startOta);setInterval(st,2000);st();</script>");
     r = shell_close(buf, buflen, off);
     return r < 0 ? -1 : r;
 }

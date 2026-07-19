@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "pov_log.h"
+
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
@@ -134,7 +136,7 @@ static void send_redirect(struct tcp_pcb *pcb) {
 
 static void on_client_err(void *arg, err_t err) {
     (void)arg; (void)err;
-    printf("[wifi_http] client error %d\n", (int)err);
+    pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "client error %d\n", (int)err);
     s_client_pcb  = NULL;
     s_get_pending  = false;
     s_post_pending = false;
@@ -223,8 +225,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
 
         strncpy(s_post_body, body, sizeof(s_post_body) - 1);
         s_post_body[sizeof(s_post_body) - 1] = '\0';
-        printf("[wifi_http] POST body (%d bytes): [%s]\n",
-               received_body, s_post_body);
+        pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "POST body received bytes=%d\n", received_body);
         s_client_pcb   = pcb;
         s_post_pending = true;
         s_req_len = 0;
@@ -268,13 +269,13 @@ void wifi_http_start(wifi_err_t initial_error) {
 
     s_listen_pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!s_listen_pcb) {
-        printf("[wifi_http] failed to create PCB\n");
+        pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "failed to create PCB\n");
         return;
     }
     tcp_bind(s_listen_pcb, IP_ANY_TYPE, HTTP_PORT);
     s_listen_pcb = tcp_listen_with_backlog(s_listen_pcb, 1);
     tcp_accept(s_listen_pcb, on_accept);
-    printf("[wifi_http] listening on port %d\n", HTTP_PORT);
+    pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "listening on port %d\n", HTTP_PORT);
 }
 
 void wifi_http_stop(void) {
@@ -303,7 +304,7 @@ void wifi_http_poll(void) {
             s_current_err, results, n);
 
         if (body_len < 0) {
-            printf("[wifi_http] config page too large for buffer\n");
+            pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "config page too large for buffer\n");
             body_len = 0;
         }
 
@@ -329,9 +330,9 @@ void wifi_http_poll(void) {
 
         /* Resolve effective SSID: selected list entry, else manual entry */
         const char *effective_ssid = ssid_sel[0] ? ssid_sel : ssid_manual;
-        printf("[wifi_http] ssid_sel=[%s] ssid_manual=[%s] password_len=%d\n",
+        pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "ssid_sel=[%s] ssid_manual=[%s] password_len=%d\n",
                ssid_sel, ssid_manual, (int)strlen(password));
-        printf("[wifi_http] effective SSID=[%s]\n", effective_ssid);
+        pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "effective SSID=[%s]\n", effective_ssid);
 
         /* Server-side validation (FR-006c, FR-007, T019) */
         if (effective_ssid[0] == '\0') {
@@ -395,7 +396,7 @@ void wifi_http_poll(void) {
         }
 
         s_connect_pending = true;
-        printf("[wifi_http] connect requested for SSID: %s\n",
+        pov_logf(POV_LOG_SOURCE_WIFI_HTTP, "connect requested for SSID: %s\n",
                s_pending_creds.ssid);
     }
 }
