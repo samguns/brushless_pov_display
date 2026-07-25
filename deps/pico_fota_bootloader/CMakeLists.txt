@@ -56,11 +56,19 @@ endif()
 ########################################
 # PICO_FLASH_SIZE_BYTES
 execute_process(
-    COMMAND cat ${CMAKE_CURRENT_LIST_DIR}/linker_common/linker_definitions.in
-    COMMAND ${CMAKE_C_COMPILER} -DFLASH_SIZE=${PICO_FLASH_SIZE_BYTES}
-            -DFILESYSTEM_SIZE=${PFB_RESERVED_FILESYSTEM_SIZE_KB} -E -P
-            -o ${CMAKE_BINARY_DIR}/linker_definitions.ld -
-    )
+    COMMAND ${CMAKE_C_COMPILER} -x c
+            -DFLASH_SIZE=${PICO_FLASH_SIZE_BYTES}
+            -DFILESYSTEM_SIZE=${PFB_RESERVED_FILESYSTEM_SIZE_KB}
+            -E -P
+            ${CMAKE_CURRENT_LIST_DIR}/linker_common/linker_definitions.in
+            -o ${CMAKE_BINARY_DIR}/linker_definitions.ld
+    RESULT_VARIABLE PFB_LINKER_DEFINITIONS_RESULT
+    ERROR_VARIABLE PFB_LINKER_DEFINITIONS_ERROR
+)
+if (NOT PFB_LINKER_DEFINITIONS_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "Failed to generate linker_definitions.ld: ${PFB_LINKER_DEFINITIONS_ERROR}")
+endif()
 ########################################
 # Check and set AES key
 ########################################

@@ -34,7 +34,8 @@ extern "C" {
  * readiness state and rotation speed, plus an optional notice banner. Values
  * are as of page load. Current Clock shows calibrated HH:MM:SS CST or an
  * unavailable placeholder. Rotation speed is unavailable until the first valid
- * measurement, then shown as whole-number RPM (including 0 RPM when stopped).
+ * measurement, then the latest measured whole-number RPM is retained through
+ * measurement gaps.
  */
 int wifi_sta_web_build_status_page(char *buf, size_t buflen,
                                    const char *ssid,

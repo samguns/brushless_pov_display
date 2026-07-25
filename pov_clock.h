@@ -94,6 +94,9 @@ void pov_clock_rotation_init(pov_clock_rotation_t *rotation);
 pov_clock_rotation_status_t pov_clock_rotation_update(
     pov_clock_rotation_t *rotation,
     const hall_rotation_measurement_t *measurement);
+/* True once measured timing is available for adaptive display. Target-RPM
+ * suitability is diagnostic only and does not affect this decision. */
+bool pov_clock_rotation_ready_for_display(const pov_clock_rotation_t *rotation);
 
 pov_clock_health_t pov_clock_derive_health(const pov_clock_time_t *clock,
                                            const pov_clock_rotation_t *rotation);

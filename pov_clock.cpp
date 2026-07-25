@@ -89,18 +89,12 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
     }
 
     if (measurement == nullptr || !measurement->valid || measurement->stale) {
-        rotation->rpm = 0.0f;
-        rotation->period_us = 0u;
-        rotation->phase_reference_us = 0u;
-        rotation->fresh = false;
-        rotation->within_range = false;
-        rotation->stable = false;
-        rotation->status = POV_CLOCK_ROTATION_UNAVAILABLE;
-        /* Reset the smoothing window so a resumed spin starts clean. */
-        rotation->hist_count = 0u;
-        rotation->hist_head = 0u;
-        rotation->period_sum = 0u;
-        rotation->smoothed_period_us = 0u;
+        /* A temporary measurement gap must not blank an already-running POV
+         * display. Keep extrapolating from the last valid period and phase
+         * reference; before the first valid sample there is nothing to reuse. */
+        if (!rotation->fresh) {
+            rotation->status = POV_CLOCK_ROTATION_UNAVAILABLE;
+        }
         return rotation->status;
     }
 
@@ -123,6 +117,27 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
             outlier = (diff * 100u) >
                       (rotation->smoothed_period_us *
                        (uint32_t)POV_CLOCK_SPEED_OUTLIER_PCT);
+
+            /* A real large speed change also looks like an outlier. If two
+             * consecutive raw periods agree, treat them as a new operating
+             * point instead of rejecting the new speed forever. A lone missed
+             * pulse or bounce will not be followed by a matching period. */
+            if (outlier && rotation->previous_period_us > 0u) {
+                uint32_t consecutive_diff =
+                    abs_diff_u32(sample, rotation->previous_period_us);
+                bool repeated_new_speed =
+                    (consecutive_diff * 100u) <=
+                    (rotation->previous_period_us *
+                     (uint32_t)POV_CLOCK_SPEED_STABLE_ENTER_PCT);
+                if (repeated_new_speed) {
+                    rotation->hist_count = 0u;
+                    rotation->hist_head = 0u;
+                    rotation->period_sum = 0u;
+                    rotation->smoothed_period_us = 0u;
+                    rotation->stable = false;
+                    outlier = false;
+                }
+            }
         }
 
         if (!outlier) {
@@ -140,8 +155,6 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
                 (uint8_t)((rotation->hist_head + 1u) % (uint8_t)POV_CLOCK_SPEED_WINDOW);
             rotation->smoothed_period_us =
                 (uint32_t)(rotation->period_sum / rotation->hist_count);
-            rotation->previous_period_us = sample;
-
             /* Hysteresis on the stable decision (accepted samples only). */
             if (rotation->hist_count >= (uint8_t)POV_CLOCK_SPEED_MIN_SAMPLES) {
                 uint32_t dev = abs_diff_u32(sample, rotation->smoothed_period_us);
@@ -158,7 +171,9 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
                 rotation->stable = false;  /* not yet confident */
             }
         }
-        /* Outlier: leave ring, smoothed period, and stability unchanged. */
+        /* Remember every raw period so repeated outliers can establish a real
+         * new speed. Isolated outliers still leave the active estimate intact. */
+        rotation->previous_period_us = sample;
     }
 
     /* Rendering outputs come from the smoothed estimate (raw until the first
@@ -186,6 +201,10 @@ pov_clock_rotation_status_t pov_clock_rotation_update(
     }
 
     return rotation->status;
+}
+
+bool pov_clock_rotation_ready_for_display(const pov_clock_rotation_t *rotation) {
+    return rotation != nullptr && rotation->fresh && rotation->period_us > 0u;
 }
 
 pov_clock_health_t pov_clock_derive_health(const pov_clock_time_t *clock,

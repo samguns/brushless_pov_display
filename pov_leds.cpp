@@ -35,11 +35,9 @@ constexpr uint8_t kRequestedLedCount = POV_LED_MAX_COUNT;
 constexpr uint kDefaultDataPin = 2;
 constexpr uint32_t kHallLogIntervalMs = 1000;
 constexpr uint32_t kStatusFrameIntervalMs = 500;
-// Temporary bring-up bypass: render against the configured nominal clock
-// instead of accepting/rejecting rotation from the low-rate HAL250SO. Set false
-// after installing a Hall sensor fast enough to capture every magnet pass.
-// Hall measurement, web RPM publication, and diagnostic logging remain active.
-constexpr bool kAssumeFixedRotation = true;
+// Debug-only timing override. Production rendering always uses the measured Hall
+// period (and retains the last measured period across temporary sample gaps).
+constexpr bool kAssumeFixedRotation = false;
 constexpr const char *kTimeServer = "ntp.tencent.com";
 
 // Bench test mode: when true, ignore the POV clock/status logic and light every
@@ -170,8 +168,10 @@ int main() {
             active_rotation_config = current_rotation_config;
             rotation.speed_config = active_rotation_config;
             hall_rotation.speed_config = active_rotation_config;
-            rotation.fresh = false;
-            renderer.phase_locked = false;
+            if (kAssumeFixedRotation) {
+                rotation.fresh = false;
+                renderer.phase_locked = false;
+            }
             status_frame_dirty = true;
             LOG_CLOCK("rotation target rad_s=%u.%02u rpm=%u range=%u-%u period_us=%u",
                       (unsigned)(active_rotation_config.rad_s_x100 / 100u),
@@ -239,8 +239,6 @@ int main() {
             if (measurement.valid && !measurement.stale) {
                 rotation_speed_available = true;
                 rotation_speed_rpm = (uint32_t)(measurement.rpm + 0.5f);
-            } else if (rotation_speed_available && measurement.stale) {
-                rotation_speed_rpm = 0u;
             }
             pov_clock_rotation_status_t status =
                 pov_clock_rotation_update(&hall_rotation, &measurement);
@@ -278,6 +276,12 @@ int main() {
         }
 
         pov_clock_health_t health = pov_clock_derive_health(&clock_time, &rotation);
+        /* Target-RPM suitability remains useful diagnostic information, but it
+         * must not gate adaptive rendering. Once Hall timing exists, render at
+         * that measured cadence even when it differs from the debug target. */
+        bool adaptive_display_ready =
+            clock_time.calibrated &&
+            pov_clock_rotation_ready_for_display(&rotation);
         if (health != last_health) {
             last_health = health;
             status_frame_dirty = true;
@@ -301,7 +305,7 @@ int main() {
                         status_frame_dirty = false;
                     }
                 }
-            } else if (health == POV_CLOCK_HEALTH_NORMAL) {
+            } else if (adaptive_display_ready) {
                 uint32_t frame_duration_us =
                     ws2812_driver_get_frame_duration_us(
                         &driver, driver.strip.active_count);

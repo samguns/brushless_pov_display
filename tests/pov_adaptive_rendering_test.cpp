@@ -81,6 +81,56 @@ void test_supported_envelope() {
     assert(status_for(510.0f, 117647u) == POV_CLOCK_ROTATION_TOO_FAST);
 }
 
+void test_measured_timing_has_display_priority() {
+    pov_clock_rotation_t rotation{};
+    pov_clock_rotation_init(&rotation);
+    assert(!pov_clock_rotation_ready_for_display(&rotation));
+
+    /* A measured speed outside the target range still supplies display timing. */
+    hall_rotation_measurement_t slow = sample(200.0f, 300000u, 1000000u, 1u);
+    assert(pov_clock_rotation_update(&rotation, &slow) ==
+           POV_CLOCK_ROTATION_TOO_SLOW);
+    assert(rotation.period_us == slow.period_us);
+    assert(pov_clock_rotation_ready_for_display(&rotation));
+
+    /* A missing follow-up sample keeps that measured timing available. */
+    slow.valid = false;
+    slow.stale = true;
+    assert(pov_clock_rotation_update(&rotation, &slow) ==
+           POV_CLOCK_ROTATION_TOO_SLOW);
+    assert(rotation.period_us == 300000u);
+    assert(pov_clock_rotation_ready_for_display(&rotation));
+}
+
+void test_large_speed_step_reseeds_filter() {
+    pov_clock_rotation_t rotation{};
+    pov_clock_rotation_init(&rotation);
+
+    uint32_t generation = 1u;
+    uint64_t edge_us = 1000000u;
+    auto feed = [&](uint32_t period_us) {
+        edge_us += period_us;
+        hall_rotation_measurement_t m = sample(
+            60000000.0f / (float)period_us, period_us, edge_us, generation++);
+        return pov_clock_rotation_update(&rotation, &m);
+    };
+
+    /* Approximately 66 rad/s, then 30 rad/s: the >2x period step exceeds the
+     * ordinary outlier band but two matching samples must establish it. */
+    constexpr uint32_t fast_period_us = 95199u;
+    constexpr uint32_t slow_period_us = 209440u;
+    for (int i = 0; i < POV_CLOCK_SPEED_WINDOW; ++i) {
+        feed(fast_period_us);
+    }
+    assert(rotation.period_us == fast_period_us);
+
+    feed(slow_period_us);
+    assert(rotation.period_us == fast_period_us);  /* first sample is guarded */
+    feed(slow_period_us);
+    assert(rotation.period_us == slow_period_us);  /* repeated step takes over */
+    assert(pov_clock_rotation_ready_for_display(&rotation));
+}
+
 void test_speed_calibration() {
     pov_clock_rotation_t rotation{};
     pov_clock_rotation_init(&rotation);
@@ -138,14 +188,26 @@ void test_speed_calibration() {
            rotation.smoothed_period_us <= 127500u);
     assert(rotation.status == POV_CLOCK_ROTATION_SUITABLE);
 
-    /* Stop resets the window (C8) and a resumed spin is not immediately SUITABLE. */
+    /* A missing measurement retains the last display timing and confidence. */
     hall_rotation_measurement_t stale = sample(480.0f, 125000u, edge + 1u, gen + 100u);
     stale.valid = false;
     stale.stale = true;
+    uint32_t retained_period = rotation.period_us;
+    uint64_t retained_phase = rotation.phase_reference_us;
+    uint8_t retained_count = rotation.hist_count;
     assert(pov_clock_rotation_update(&rotation, &stale) ==
+           POV_CLOCK_ROTATION_SUITABLE);
+    assert(rotation.period_us == retained_period);
+    assert(rotation.phase_reference_us == retained_phase);
+    assert(rotation.hist_count == retained_count);
+    assert(feed(125000u) == POV_CLOCK_ROTATION_SUITABLE);
+
+    /* No previous measurement still reports unavailable. */
+    pov_clock_rotation_t empty{};
+    pov_clock_rotation_init(&empty);
+    assert(pov_clock_rotation_update(&empty, nullptr) ==
            POV_CLOCK_ROTATION_UNAVAILABLE);
-    assert(rotation.hist_count == 0u);
-    assert(feed(125000u) != POV_CLOCK_ROTATION_SUITABLE);
+    assert(!empty.fresh);
 }
 
 void test_phase_mapping_and_reanchor() {
@@ -292,6 +354,8 @@ void test_transport_budget() {
 int main() {
     test_rotation_config_derivation();
     test_supported_envelope();
+    test_measured_timing_has_display_priority();
+    test_large_speed_step_reseeds_filter();
     test_speed_calibration();
     test_phase_mapping_and_reanchor();
     test_round_rendering();
